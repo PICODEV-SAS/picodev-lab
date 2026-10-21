@@ -57,6 +57,11 @@ jobs:
           arduino-cli core install esp32:esp32
           arduino-cli core install rp2040:rp2040
 
+      # Same npm 10 resolver crash ("reading 'edgesOut'") as in
+      # frontend-tests.yml; see the comment there.
+      - name: Pin npm (Node 22 ships a resolver that cannot install this tree)
+        run: npm install -g npm@11
+
       - name: Install frontend dependencies
         run: cd frontend && npm install --no-audit --no-fund --include=optional
 
