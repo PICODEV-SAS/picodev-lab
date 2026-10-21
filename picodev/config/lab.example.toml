@@ -1,0 +1,69 @@
+# Deployment file of a restricted Velxio instance.
+#
+# Mounted read-only in the container and named by PICODEV_CONFIG. Every key is
+# optional: a rule that is absent is not enforced, and with no file at all the
+# image behaves as stock Velxio. Keep the real file of a deployment outside
+# this repository (Picodev keeps its own next to its compose file).
+#
+# The values below are the ones of Picodev Lab, as an example.
+
+[brand]
+name = "Picodev Lab"                                   # header, page titles, refusal messages
+source_url = "https://github.com/PICODEV-SAS/picodev-lab"  # AGPL source offer shown on every page
+logo_url = "/site/img/logo-couleur.png"                # logo of the bench workspace, served by the front proxy; absent = the name as text
+landing = "/example/picodev-setup-a"                   # where "/" redirects; absent = Velxio home
+
+[boards]
+allowed = ["arduino-nano", "arduino-uno"]              # board kinds offered in the editor
+default = "arduino-nano"                               # board of a new workspace
+fqbns = ["arduino:avr:nano", "arduino:avr:uno"]        # boards the server compiles for
+
+[bench]
+# The bench workspace (/bench/<setup>, /bench/<setup>/challenge). Paths of the
+# same origin, served by the deployment's front proxy, not by this image.
+setups_url = "/setups"        # sheets: <setups_url>/<setup>/setup.json; absent = "/setups"
+exit_url = "/fin"             # end of a session, with ?setup=&mode=&level=&t=; absent = "/"
+                              # in English the bench sends to /en<exit_url> (here /en/fin)
+home_url = "/"                # "Changer" and the error pages; absent = "/"
+
+[hub]
+# The session hub (protocol: picodev/docs/live-protocol.adoc): sessions,
+# spectator page /w/<session>, agent access. A path of the same origin. Absent: the bench is offline-only,
+# it never calls a hub, and /w/<session> says "non disponible".
+url = "/hub"
+
+[limits]
+max_files = 8                 # files per compile request
+max_source_bytes = 65536      # total source size per compile request
+max_body_bytes = 262144       # request body, also nginx client_max_body_size
+compiles_per_minute = 6       # per client address, in the backend
+compile_timeout = 60          # seconds before a build is stopped
+artifact_cache_hours = 24     # life of a compiled program (no source) in the disk cache, from its build;
+                              # a hit does not extend it; 0 = no disk cache; absent = Velxio's 14 days since last hit
+api_rate = "10r/s"            # nginx limit_req on /api/, per address
+compile_rate = "12r/m"        # nginx limit_req on /api/compile, per address
+
+[routes]
+# Refused by nginx and by the backend (HTTP and WebSocket).
+blocked = [
+  "/api/flash",
+  "/api/gateway",
+  "/api/simulation",
+  "/api/compile-chip",
+  "/api/compile-rom",
+  "/api/compile/ensure-core",
+  "/api/micropython-libs",
+  "/api/news",
+  "/api/libraries/uninstall",
+  "/api/docs",
+  "/api/openapi.json",
+]
+# Velxio pages that are not part of this instance: redirected to the landing.
+hidden_pages = ["pricing", "classroom", "about", "account", "docs", "blog"]
+
+[toolchain]
+# Built into the image (docker build args, see picodev/docker/Dockerfile); the
+# running container downloads nothing. `libraries` is also the list a visitor
+# may "install": leave the key out to allow any library.
+cores = ["arduino:avr@1.8.6"]
+libraries = ["Servo@1.2.2"]

@@ -1,0 +1,36 @@
+name: Picodev overlay
+
+# The overlay's own tests: the backend guard, the rendering of the
+# deployment file, and the example relay. Velxio's workflows only run on
+# master/main.
+#
+# GitHub-hosted on purpose: this repository is meant to be public, and a public
+# repository must never reach the organisation's self-hosted runners.
+on:
+  push:
+    branches: ['**']
+    paths:
+      - 'picodev/**'
+      - '.github/workflows/picodev-ci.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install fastapi httpx pytest
+      - run: PYTHONPATH=picodev/backend python -m pytest picodev/backend/tests -q
+      - run: pip install -r picodev/hub-example/requirements.txt
+      - run: python -m pytest picodev/hub-example -q

@@ -1,0 +1,39 @@
+name: Picodev release
+
+# A version tag publishes a GitHub release with the overlay documentation as a
+# PDF. Nothing is built or deployed from here: images and deployments belong to
+# the deployment repository.
+#
+# Only once the repository is public. While it is private the job is skipped:
+# a release would be read by nobody, and a GitHub-hosted job on a private
+# repository is billed. The tag itself is all the deployment needs. The
+# workflow reads the visibility itself, so nothing is to change on opening.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    if: ${{ !github.event.repository.private }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Build the documentation PDF
+        run: |
+          docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD":/documents -w /documents \
+            asciidoctor/docker-asciidoctor:1.94 \
+            asciidoctor-pdf --failure-level WARN -a revnumber="${GITHUB_REF_NAME}" \
+            -o "picodev-lab-${GITHUB_REF_NAME}.pdf" picodev/README.adoc
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" --title "${GITHUB_REF_NAME}" --generate-notes \
+            "picodev-lab-${GITHUB_REF_NAME}.pdf"

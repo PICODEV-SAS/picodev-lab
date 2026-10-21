@@ -1,0 +1,375 @@
+= Picodev Lab
+:toc: macro
+:toclevels: 2
+:sectnums:
+:icons: font
+:source-highlighter: rouge
+
+Picodev Lab is the public demo of the Picodev software factory: visitors write
+Arduino code, simulate it in the browser and, in a later stage, flash it on real
+boards in the Picodev lab while watching them on a webcam.
+
+It is built on https://velxio.dev[Velxio] by David Montero Crespo, licensed under
+the GNU AGPLv3. This repository is Velxio plus the `picodev/` directory and a few
+small configuration patches; it is published under the same license. What makes
+an instance "Picodev Lab" rather than Velxio is a deployment file, not this code
+(see <<config>>).
+
+toc::[]
+
+== Layout
+
+[cols="2,5", options="header"]
+|===
+|Path |Content
+
+|`picodev/frontend/pro/`
+|Editor overlay, plugged into Velxio's `@pro` alias at build time: attribution
+and source link, branding, hidden marketing pages, Picodev setups as examples,
+and the bench workspace in `bench/` (see <<bench>>).
+
+|`picodev/backend/pro/`
+|Backend overlay, copied to `backend/app/pro/` and loaded by Velxio's
+`register_pro(app)`: a middleware that refuses the routes the demo does not need
+and checks every compile and library request.
+
+|`picodev/backend/tests/`
+|Tests of the backend overlay.
+
+|`picodev/docker/`
+|Image: `Dockerfile`, container `nginx.conf`, `entrypoint.sh`, and
+`render_config.py`, which turns the deployment file into what the editor and
+nginx read.
+
+|`picodev/config/lab.example.toml`
+|Documented example of the deployment file (see <<config>>).
+
+|`picodev/docs/live-protocol.adoc`
+|The live-sharing protocol between the bench, its spectators and a hub.
+
+|`picodev/hub-example/`
+|A minimal relay for that protocol, with its tests. An example, not for
+production.
+
+|`.github/README.md`
+|The page GitHub shows for this repository: says it is a fork of Velxio and
+credits its author. GitHub prefers it to the root `README.md`, which stays
+Velxio's own, unchanged.
+
+|`frontend/src/lib/deploymentConfig.ts`
+|The only new file in the Velxio tree: brand name, allowed boards and default
+board (see <<patches>>).
+|===
+
+== How the overlay works
+
+Velxio is designed to receive a private overlay without being patched:
+
+* *Editor.* `frontend/vite.config.ts` resolves the `@pro` import to a no-op stub,
+  or to `PRO_OVERLAY_PATH` when the bundle is built with `VITE_PRO_BUILD=true`.
+  `main.tsx` then calls the overlay's `mountPro()` at startup, and
+  `data/examples.ts` merges its `proExamples`. The Picodev image copies
+  `picodev/frontend/pro/` to `frontend/src/pro/` and builds with these variables.
+* *Backend.* `backend/app/main.py` imports `app.pro` when the package exists and
+  calls its `register_pro(app)`. The image copies `picodev/backend/pro/` there.
+  Velxio silently ignores an `app.pro` that fails to import, so the Picodev
+  entrypoint imports it first and refuses to start if it cannot.
+
+[[config]]
+== Deployment file
+
+Nothing about a particular deployment is written in this repository. One TOML
+file, mounted read-only in the container and named by `PICODEV_CONFIG`, sets
+the name, the boards, the limits, the refused routes and the toolchain;
+`picodev/config/lab.example.toml` documents every key with the values of
+Picodev Lab. A deployment keeps its own file outside this repository.
+
+A rule the file does not set is not enforced: with no file at all, the image
+runs as stock Velxio. A file that is named but missing or invalid stops the
+container at start, so a restricted instance never runs open by accident.
+
+The same file is read in three places:
+
+[cols="2,4", options="header"]
+|===
+|Reader |What it takes
+
+|`picodev/backend/pro`
+|Refused routes (HTTP and WebSocket), boards that may be compiled, libraries
+that may be installed, request limits, compile rate per client, compile timeout,
+life of the compile cache.
+
+|`picodev/docker/render_config.py` -> `/config.js`
+|What the editor needs, read at page load before the application bundle: brand
+name, source link, boards offered, default board, and the three paths of the
+`[bench]` section (`setupsUrl`, `exitUrl`, `homeUrl`) and the logo path
+(`logoUrl`), and the hub path `[hub] url` (`hubUrl`). Every path is of the
+same origin (`//host` is refused). One image serves any
+deployment without a rebuild.
+
+|`picodev/docker/render_config.py` -> nginx includes
+|Landing redirect, hidden pages, refused routes, request size, rate limits per
+address. Values are checked against strict patterns before they reach nginx.
+|===
+
+Only the toolchain is fixed when the image is built, because the running
+container downloads nothing: pass the `[toolchain]` lists as the `ARDUINO_CORES`
+and `ARDUINO_LIBS` build arguments. The libraries listed there are also the
+ones a visitor may "install", so the allowlist cannot drift from the image.
+
+[[patches]]
+== Configuration patches to Velxio
+
+One commit, written to be proposed upstream. Every value falls back to the stock
+behaviour when unset. The editor reads each value from `window.__LAB_CONFIG__`
+(set by `/config.js`) first, then from the build-time variable.
+
+[cols="2,2,4", options="header"]
+|===
+|Run time |Build time |Effect
+
+|`brandName`
+|`VITE_BRAND_NAME`
+|Product name in the header.
+
+|`allowedBoards`
+|`VITE_ALLOWED_BOARDS`
+|Board kinds offered in the new project dialog, the board picker and the
+examples gallery.
+
+|`defaultBoard`
+|`VITE_DEFAULT_BOARD`
+|Board kind of the initial workspace (its id stays `arduino-uno`).
+
+|`sourceUrl`
+|`VITE_SOURCE_URL`
+|Where the source of the instance is published.
+
+|
+|`VELXIO_COMPILE_TIMEOUT`
+|Seconds before an arduino-cli build is stopped (environment of the backend).
+
+|
+|`VELXIO_ARTIFACT_CACHE_HOURS`
+|Hours a compiled program stays in the disk cache from its build, checked when
+the cache is read and written, a hit not extending it; `0` turns the cache off.
+Unset: 14 days since the last hit (environment of the backend).
+|===
+
+The image itself, whatever the file, keeps no access log and logs errors only
+(WARNING and up), with no client address and no code: nginx `access_log off`,
+uvicorn `--no-access-log --log-level warning` and every logger at WARNING
+(`picodev/docker/logging.json`), with its standard output (where Velxio prints
+arduino-cli's output) dropped; nginx logs at `crit` only, since its request
+errors carry the client address. It
+purges a finished compile result 30 minutes after the build (Velxio's
+`JOB_TTL_S`) on time, not at the next compile. nginx removes the `preconnect`
+and `dns-prefetch` hints to third parties from Velxio's `index.html`.
+
+`/config.js` is added to the pages by the container nginx (`sub_filter`), so
+Velxio's `index.html` is not patched.
+
+One fix, to propose upstream: the AVR loop of
+`frontend/src/simulation/AVRSimulator.ts` runs until the clock has advanced by
+a frame's cycles. It counted instructions, which take 1 to 4 cycles, so the
+simulated clock ran about 1.5 times faster than real time.
+
+[[bench]]
+== Bench workspace
+
+`/bench/<setup>` (free mode) and `/bench/<setup>/challenge` (challenge mode)
+are a page of the overlay, registered with Velxio's `registerProRoutes`; it
+replaces no Velxio page and patches no Velxio file. It reads a setup sheet
+(its format is defined by a JSON Schema kept with the setups, outside this
+repository) from
+`<setups_url>/<setup>/setup.json`, loads its circuit and sketch as a Velxio
+example, compiles through the stock `/api/compile` and runs the stock
+simulator.
+
+[cols="2,5", options="header"]
+|===
+|File of `picodev/frontend/pro/bench/` |Role
+
+|`BenchPage.tsx`, `LevelPanel.tsx`, `bench.css`
+|The page: loading, compile -> load -> start, levels, autosave, end of session.
+
+|`layout.tsx`
+|The visitor's arrangement: columns and parts of the « Vue » tab moved (grip,
+dragged or arrow keys), resized (separator) and folded to their name (the
+button next to the grip), kept in the browser (`picodev-lab:bench-layout`).
+
+|`palette.ts`
+|The colours of the probes, shared by the marks on the schema, the live traces
+and the logic capture; the board pin name of a probe.
+
+|`sheet.ts`, `config.ts`
+|Fetching and checking a sheet; the `[bench]` paths (`/setups`, `/`, `/` when
+the section is absent, so an unconfigured instance only ever shows "setup
+not found").
+
+|`probe.ts`
+|`BenchProbe` over the simulator instance: chains its two single callback
+slots, wraps its `setPinState` so that input edges are reported too, and
+claims the pins it forces in Velxio's `partPinOwnership` so that the SPICE
+solve of the wiring does not overwrite them.
+
+|`lang.ts`, `text.ts`
+|The language of both pages (French or English) and every text they show; the
+setup's own texts come from the `i18n` of its sheet.
+
+|`Schema.tsx`, `Traces.tsx`, `monaco.ts`
+|Velxio's `SimulatorCanvas` shown as a read-only picture, with the sheet's
+probes marked at the board's pins (from its `pinInfo`) and a legend;
+read-only traces drawn from Velxio's oscilloscope store, the scope with a
+legend per trace; the workspace colours for Velxio's `CodeEditor` (its two
+Monaco theme names are redefined while the page is mounted, and restored
+after), and its lock while it shows an agent's compiled program.
+
+|`engine/`
+|Scene player, couplings and test runner: pure functions over `BenchProbe`.
+
+|`hub.ts`, `HubControls.tsx`
+|The bench's side of the hub (`[hub] url`): session, live channel, what the
+owner publishes and applies; the visibility menu and the agent journal.
+
+|`SpectatorPage.tsx`, `replayProbe.ts`, `frame.tsx`
+|The spectator page `/w/<session>#v=<token>`: a `BenchProbe` fed by the
+relayed events drives the same scene player and traces. It compiles and
+simulates nothing and loads no part of Velxio's editor. `frame.tsx` holds the
+header, footer and message page both pages share.
+
+|`assets/`
+|Geist and Geist Mono (SIL Open Font License 1.1, `OFL.txt`). Vite publishes
+them under `/assets/` with hashed names.
+|===
+
+The image ships no logo. The header shows the one named by `[brand] logo_url`
+(a path of the same origin, served by the deployment, `logoUrl` in
+`/config.js`) followed by the rest of the brand name as a badge; without the
+key it shows the whole brand name as text.
+
+With `[hub] url` (`hubUrl` in `/config.js`), the bench opens a session at
+`POST <url>/sessions`, or resumes the one of `?s=<session>#o=<owner token>`
+(the link an agent hands out), reading its visibility and spectator link back
+with `GET <url>/sessions/<id>` (owner token). The fragment is removed from the address as
+soon as it is read; tokens stay in `sessionStorage` (`picodev-lab:hub:<session>`),
+never in a path or a query string. The live channel `<url>/sessions/<id>/live`
+carries `state` (debounced), `events` (at most 10 batches a second: the pins
+of the sheet's probes and scene, servo angles, PWM, serial), `compile` (with
+its `origin`); it applies `push` (`run` goes the way of the Lancer button) and
+`program`, a HEX the agent compiled on its machine (v0.15): loaded in the
+simulator without compiling, its sources read-only in the editor, marked
+« compilé sur le poste de l'agent », and the editor column hidden until a
+`push` (the header button shows or hides it at any time, remembered for the
+tab in `sessionStorage`, `picodev-lab:bench-code:<setup>`); it reads the session
+back after an agent's `set_visibility`, and comes back with a backoff, except
+after a 1008 close: a session the hub refuses is replaced by a new one, once;
+a channel taken over by another tab stays offline. When the hub lists benches for
+the setup (`GET <url>/benches`, optional), the bench offers to join their queue
+(one button per kind), then shows the place, the estimated wait and the turn with
+its time left, and lets the visitor give it back; the spectator page shows the
+turn. A turn with `video` (optional, a WHEP path on the same origin) shows the
+bench filmed live in place of the scene, to the owner and the spectators, with
+the browser's WebRTC and the session token. On `capture_start` (optional too), the bench records every edge of the
+asked probe pins over a stretch of simulated time and sends the record in
+chunks; it records, it never measures nor decodes. `state` carries the
+circuit (components and wires, in the setup sheet's shape); in free mode the
+bench replaces it with a `circuit` the hub sends, after checking the types
+against its catalogue and the wire ends against the pins, and on `analog_start`
+it samples the voltage of board pins on the simulated clock (optional, both).
+`state` also carries the session clock (`clock`: simulated ms since the launch,
+speed, pause), and the first chunk of either capture its start on that clock
+(`t0_ms`). Pause / Reprendre and the speed (×0,1 to ×10, kept across runs, ×1 at
+page load) are the owner's, next to Lancer: a pause stops the simulator's loop
+without a reset (`Arrêter` still resets), ends an agent's capture still recording
+and lets the visitor's wait; the spectator page shows the clock, pause and speed.
+The hub out of reach, the
+bench works as without it and says "Partage indisponible". Without the key nothing calls a hub and
+`/w/<session>` says the page is not available. The protocol a hub speaks is
+described in `picodev/docs/live-protocol.adoc`; `picodev/hub-example/` is a
+minimal relay that implements it. The hub is not part of this repository: the
+fork is a complete simulated bench, and Picodev runs its own hub, which adds
+real benches, a queue and an agent service (MCP) that are not part of this
+project.
+
+The visitor's sketch is kept in `localStorage` (`picodev-lab:sketch:<setup>`,
+and `picodev-lab:last-sketch` as `{name, content}` for the end page), and so is
+the level reached in Défi (`picodev-lab:level:<setup>`, the index of the current
+level; a reload resumes there, "Réinitialiser le code" leaves it). A
+session ends on `<exit_url>?setup=<id>&mode=free|challenge&level=<n>&t=<seconds>`,
+`level` being the number of levels passed.
+
+Both pages are in French or English, chosen by the FR / EN buttons of the bench
+header: the address does not change, the page reloads in the new language. The
+code, the level and the hub session are kept (autosave, level memory, the tab's
+`sessionStorage`); a running simulation stops. The choice is kept in
+`localStorage` (`picodev-lab:lang`, `fr` or `en`), which a site of the same origin
+may write too; without it, French when one of the browser's languages is French,
+English otherwise. Velxio's own parts shown in the bench (code editor, schematic)
+follow through Velxio's i18next instance. The setup's title, level texts and test
+labels come from the `i18n.en` of its sheet, French for anything missing; so does
+the starting sketch (`i18n.en.files`, by file name) as long as this browser has
+not kept an edited one for the setup. In English a session ends on
+`/en<exit_url>`. Nothing written by the hub is shown, except the banner of
+`GET <url>/status` and the operator's `notice`, as plain text: a refusal of the
+queue is said from its `code`, the agent's journal from its tool name.
+
+Three more optional parts of a hub (`picodev/docs/live-protocol.adoc`):
+`GET <url>/status` puts a banner above the bench and, when the hub takes no new
+session (maintenance, or the setup closed), a strip saying so: the bench then
+simulates without opening a session (no sharing, queue nor agent), unless the
+address resumes one (`?s=`); `notice` and `level` on the owner
+channel show an operator's message and move to a level; and with `#d=<token>`
+next to `?s=`, the bench reads a draft sheet and its scene from
+`<url>/drafts/<setup>/` with that token instead of `<setups_url>/<setup>/` (a
+fixed path: no sheet address is ever taken from the URL), offers no queue on it
+and never replaces its session. Without a hub, or with a hub that answers 404,
+none of this happens.
+
+== Build and test
+
+[source,bash]
+----
+# Overlay tests (no Velxio needed)
+PYTHONPATH=picodev/backend python -m pytest picodev/backend/tests -q
+
+# Bench workspace tests (probe, engine, hub client, queue panel), with Velxio's vitest
+# (picodev/frontend/vitest.config.mts takes React from frontend/node_modules)
+cd frontend && npx vitest run --root ../picodev/frontend
+
+# Image (from the repository root), with the toolchain of the example file
+docker build -f picodev/docker/Dockerfile --build-arg ARDUINO_LIBS="Servo@1.2.2" -t picodev-lab:dev .
+
+# Stock Velxio
+docker run --rm -p 8080:80 picodev-lab:dev
+
+# Restricted by the example file: http://localhost:8080/ redirects to Setup A
+docker run --rm -p 8080:80 -e PICODEV_CONFIG=/etc/velxio/lab.toml \
+  -v "$PWD/picodev/config/lab.example.toml:/etc/velxio/lab.toml:ro" picodev-lab:dev
+----
+
+The image pins arduino-cli, the cores and the libraries; it downloads nothing at
+runtime. Picodev's own deployment (its file, TLS proxy, server hardening) is kept
+outside this repository.
+
+== Following Velxio
+
+Development happens on a `picodev` branch that sits on a Velxio release tag;
+the public repository, https://github.com/PICODEV-SAS/picodev-lab, receives
+one commit per release with the same tag. To move to a newer Velxio release:
+
+[source,bash]
+----
+git remote add upstream https://github.com/davidmonterocrespo24/velxio  # once
+git fetch upstream --tags
+git rebase --onto <new-tag> <old-tag> picodev
+----
+
+Conflicts can only appear in the few files touched by the configuration commit.
+Changes useful to every Velxio user are proposed upstream, so the set of patches
+carried here stays small.
+
+== License
+
+GNU AGPLv3, like Velxio (see `LICENSE`). The running service links to this
+repository so that every user can get the corresponding source.

@@ -1,0 +1,20 @@
+# What `git archive` leaves out. The public repository receives one commit per
+# release made from `git archive <tag>`, so these lines decide what is
+# published. Everything needed to build and run stays in (AGPL: complete
+# corresponding source); only notes for our own tooling and upstream workflows
+# that need upstream's secrets or post elsewhere are left out.
+
+# Notes for coding agents (Velxio's own CLAUDE.md at the root is kept).
+/AGENTS.md export-ignore
+/picodev/AGENTS.md export-ignore
+/picodev/CLAUDE.md export-ignore
+/.claude export-ignore
+/.agents export-ignore
+/.impeccable export-ignore
+
+# Upstream workflows that need Velxio's secrets, push images or post to Discord.
+/.github/workflows/backend-e2e-tests.yml export-ignore
+/.github/workflows/build-espidf-toolchain.yml export-ignore
+/.github/workflows/discord-issues.yml export-ignore
+/.github/workflows/discord-release-notify.yml export-ignore
+/.github/workflows/docker-publish.yml export-ignore

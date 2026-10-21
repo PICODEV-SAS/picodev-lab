@@ -1,0 +1,525 @@
+= Live-sharing protocol
+:toc: macro
+:toclevels: 2
+:icons: font
+:source-highlighter: rouge
+
+The bench (`/bench/<setup>`) can share what it simulates: spectators watch it
+live, read-only, at `/w/<session>`, and a script or an agent can push code into
+it. The browser that opens the bench does all the simulation; a small server,
+the *hub*, only relays messages between that browser, its spectators and an
+agent. This document describes what a hub must do so that the editor of this
+repository works with it. `picodev/hub-example/` is a minimal relay that
+implements it.
+
+The client side is `picodev/frontend/pro/bench/hub.ts` (owner) and
+`SpectatorPage.tsx` (spectator). When this document and that code disagree, the
+code is what runs; please report the difference.
+
+toc::[]
+
+== Why the hub is not here
+
+This repository is a complete simulated bench: the editor, the compile backend,
+the levels and the spectator page. Picodev runs its own hub for Picodev Lab,
+which also drives real benches, a queue in front of them and an agent service
+(MCP); those are not part of this project. The messages the editor exchanges
+about benches and the queue, the logic capture, the circuit and the analog
+capture, the messages of the hub's operator, the hub's status and draft setup
+sheets are listed at the end, as optional extensions. This document and the example relay
+are enough to use live sharing without it.
+
+== Where the hub lives
+
+The editor reads the hub's location from `[hub] url` of the deployment file
+(`hubUrl` in `/config.js`). It is a path of the same origin, for example
+`/hub`: the browser calls `<url>/sessions` with `fetch` and opens
+`ws[s]://<host><url>/sessions/<id>/live`. Every path below is relative to that
+URL. A hub on another origin is not supported; put it behind the same front
+proxy as the editor. Without the key the editor never calls a hub and
+`/w/<session>` says the page is not available.
+
+== Session, roles and tokens
+
+A session is one bench open in one browser, on one setup and one mode
+(`free` or `challenge`). Three tokens give three roles:
+
+[cols="1,4", options="header"]
+|===
+|Token |Role
+
+|`owner`
+|The browser that simulates. Publishes the bench, receives pushes, changes the
+visibility.
+
+|`viewer`
+|Read-only. Carried by the spectator link. A new one is issued at every change
+of visibility, which cuts off the spectators holding the old link.
+
+|`agent`
+|A script or an agent. Pushes code into the owner's bench.
+|===
+
+Tokens should be random strings of at least 128 bits, compared in constant
+time. They travel in exactly three places, never in a path or a query string:
+
+* the `Authorization: Bearer <token>` header of an HTTP request;
+* the first message of the live channel (`hello`);
+* the fragment of a URL, which browsers never send to a server:
+  `/w/<session>#v=<viewer>` (spectator link) and
+  `/bench/<setup>[/challenge]?s=<session>#o=<owner>` (a session created by a
+  script or an agent and opened by a human). The editor removes the fragment
+  from the address as soon as it has read it and keeps the token in
+  `sessionStorage` (key `picodev-lab:hub:<session>`, this tab only).
+
+A session id matches `[A-Za-z0-9_-]{1,128}`; the editor ignores any other.
+
+=== Visibility
+
+[cols="1,4", options="header"]
+|===
+|Value |Who may watch
+
+|`private` |Nobody. Spectators are refused, and the server gives no viewer token.
+|`link` |Whoever holds the spectator link. The default for a new session.
+|`public` |Listed by `GET /sessions/public`, which hands the link to anyone.
+|===
+
+== HTTP
+
+Requests and responses are JSON. An error is `{"detail": "<text>"}` with
+400 (invalid request), 403 (missing or wrong token), 404 (no such session),
+409 (no owner connected, push only), 413 (body too large), 429 (too many
+requests) or 503 (server full).
+
+`POST /sessions`, body `{setup, mode}`::
+Creates a session. Response `{session, owner, viewer, visibility}`; a server
+that accepts pushes adds `agent`. The editor calls it when a bench opens without
+a session it owns, then puts `?s=<session>` in its address so that a reload
+resumes it. A server should check `setup` against the setups it serves, and
+`mode` is `free` or `challenge`.
+
+`GET /sessions/<id>`, owner token::
+`{session, setup, mode, visibility, viewer, viewers}`; `viewer` is `null` when
+the session is private, `viewers` is the number of spectators connected. The
+editor calls it when it resumes a session (a reload, or a link `?s=…#o=…`) to
+learn its visibility and spectator link.
+
+`PUT /sessions/<id>/visibility`, owner token, body `{visibility}`::
+Changes the visibility. Response `{visibility, viewer}`: the new viewer token,
+`null` when private. The server sends `closed` with reason `visibility` to every
+spectator connected and closes their channels.
+
+`GET /sessions/public`::
+The public sessions:
+`[{session, viewer, setup, mode, level, started_at, viewers}]`. `level` is the
+index of the current level, from 0, as in `state`; absent in free mode.
+`started_at` is in Unix seconds, an integer. The editor does not call it; a
+landing page can, to offer "watch".
+
+`POST /sessions/<id>/push`, agent token, body `{files: [{name, content}], run}`::
+Sends `push` to the owner (see below); `run` defaults to `true`. 409 when no
+owner is connected. This is how the example relay lets scripts and agents in;
+a server may offer other agent interfaces, such as an MCP server, as long as
+the owner receives the same `push` message.
+
+== Live channel
+
+WebSocket `/sessions/<id>/live`. Every message is one JSON object per text
+frame, with `type` and its fields at the top level. The first message is
+
+[source,json]
+----
+{"type": "hello", "role": "owner", "token": "<owner token>"}
+----
+
+or the same with `"role": "viewer"` and the viewer token. Anything else, a wrong
+token, an unknown session, or a viewer on a private session: the server closes
+with 1008. The server sends no acknowledgement; the editor counts the channel
+as up once the socket is open.
+
+=== From the owner
+
+The server relays these three to every spectator, and keeps the last `state`
+to send it first to a spectator who arrives later. Earlier `events` are not
+replayed.
+
+[cols="1,5", options="header"]
+|===
+|`type` |Fields
+
+|`state`
+|`setup` (setup id), `mode` (`free` or `challenge`), `files`
+(`[{name, content}]`), `level` (index of the current level, from 0), `running`
+(boolean), `results` (results of the current level's tests), and the optional
+`circuit` and `clock` of the extensions below. Sent after
+every `hello` and, debounced by 300 ms, whenever the bench changes. The server
+keeps and relays the whole object. When the message would exceed 64 KiB, the
+editor sends it without `files` and with `"files_omitted": true`; the
+spectator page then says the code is too long to be shared live. A server
+needs no change for it.
+
+|`events`
+|`events`: the batch since the previous message, `[{t, k, pin?, v}]`. `t` is
+the simulated time in ms (three decimals); `k` is `pin` (`v` 0 or 1), `pwm`
+(`v` the duty cycle), `servo` (`v` the angle in degrees), each with `pin`, or
+`serial` (`v` the text, no `pin`). At most 10 messages a second and 400 events
+a message; only the pins the setup sheet probes or animates are sent.
+
+|`compile`
+|`ok` (boolean), `log` (the end of the compiler output, at most 16,000
+characters), `program` (optional: the Intel HEX text when `ok`, at most 48 KiB;
+a hub that drives real benches forwards it to the bench, a relay ignores it),
+`origin` (v0.15: `cloud` when the lab compiled the editor's code, `agent` when
+the program is one the agent compiled on its machine and sent with `program`).
+Sent at the end of every compilation, and when the editor loads an agent's
+program. The editor keeps the whole message within 60 KiB: when the program
+and the log would weigh more, it cuts the start of the log and marks the cut
+with `[…]`.
+|===
+
+=== To the owner
+
+[cols="1,5", options="header"]
+|===
+|`type` |Fields
+
+|`push`
+|`files` (`[{name, content}]`, 1 to 8 files, names matching
+`[A-Za-z0-9_.-]{1,64}`), `run` (boolean, `true` when absent). The editor
+replaces its code with `files`, then compiles and runs when `run` is true. It
+drops a `push` whose files do not have that shape. The editor column is shown
+again if a `program` had hidden it.
+
+|`program`
+|v0.15. `hex` (Intel HEX text, at most 48 KiB), `files` (optional, as in
+`push`: the sources of the program), `run` (boolean, `true` when absent): a
+program the agent compiled on its machine. The editor does not compile it:
+it loads `files` in the editor, read-only and marked « compilé sur le poste de
+l'agent », hides the editor column, loads `hex` in the simulator and runs it
+when `run` is true, then sends `compile` `{ok: true, log, program: hex,
+origin: "agent"}` (also when `run` is false), so a hub passes the program to a
+real bench as after a compilation of the lab. Its Lancer button runs the same
+program again until a `push`, a reset of the code or the visitor's « Modifier
+ici ». It drops a `program` whose `hex` is not Intel HEX (each line `:` then
+hex pairs, length and checksum right, types 00 to 05, one end record 01,
+last; LF or CRLF), is above 48 KiB, or whose `files` do not have the shape of
+a push.
+
+|`agent`
+|`tool`, `summary`: what an agent did, shown in the bench's agent journal
+(the first 64 and 500 characters). When `tool` is `set_visibility`, the editor
+reads the session back with `GET /sessions/<id>`: a server whose agents can
+change the visibility sends it after doing so.
+
+|`viewers`
+|`count`: the number of spectators connected. The example relay sends it after
+the owner's `hello` and whenever the number changes.
+|===
+
+=== To a spectator
+
+`state`, `events` and `compile` as the owner sent them, then `closed` with
+`reason`: `ended` (the session is over) or `visibility` (the owner changed who
+may watch, the link no longer works). The spectator page shows "session
+ended" and does not reconnect. Spectators send nothing after `hello`.
+
+=== Close codes
+
+[cols="1,4", options="header"]
+|===
+|Code |Meaning
+
+|1008 |Invalid `hello`, wrong token, unknown or ended session, viewer on a
+private session; also, for an owner, another connection of the same owner
+taking its place. The editor does not reconnect with the same token (see
+below).
+|1009 |A message larger than the server accepts.
+|1013 |Too many spectators on this session.
+|===
+
+After a 1008, the owner's editor tells the two cases apart by timing: a
+channel that had worked (a message received, or open more than 5 s) was taken
+over by another tab, and the editor stays offline ("Session reprise dans un
+autre onglet"); a `hello` refused at once means the session is gone, and the
+editor creates a new session with `POST /sessions`, once. It does the same
+when `GET /sessions/<id>` answers 404 or 403 on resume. If the new session
+fails too, the bench shows "Partage indisponible".
+
+On any other close the editor reconnects with a backoff of 1 s, 2 s, 4 s… up to
+30 s; the owner sends `hello` and its `state` again. While the hub is out of
+reach the bench works as without it and says "Partage indisponible".
+
+== Optional extension: benches and a queue
+
+A hub may also run *benches*: something that executes a session's code for a
+while (a *turn*), for example real hardware, with a first-come, first-served
+queue in front of each (`setup`, `kind`) pair. `kind` matches
+`[a-z0-9-]{1,32}`; the editor labels `real` "banc réel", `sim` "banc simulé",
+and shows any other kind as it is. This is optional: a relay may ignore all of
+it, and `picodev/hub-example/` does not implement it. Without it the editor
+behaves exactly as described above.
+
+`GET /benches`::
+`[{setup, kind, benches, free, waiting}]`: one object per pair, `benches` the
+benches connected, `free` the free ones, `waiting` the places in the queue.
+The editor offers a button per `kind` that has at least one bench for its
+setup. Any error, a 404 included, means "no bench".
+
+On the owner's live channel:
+
+[cols="1,1,4", options="header"]
+|===
+|Direction |`type` |Fields
+
+|owner -> hub |`queue_join` |`kind`: take a place in the queue of the session's setup.
+|owner -> hub |`queue_leave` |Give the place back, or the turn once it started.
+|hub -> owner |`queue` |`kind`, `position` (from 1), `waiting`, `eta_s` (estimated wait in seconds, an upper bound; 0 when a bench is free). Sent on joining and at every change.
+|hub -> owner |`turn` |`kind`, `bench` (its id), `ends_at` (Unix seconds, an integer), `video` (optional, see below): the turn starts.
+|hub -> owner |`turn_end` |`reason`: the place or the turn is over: `time`, `left`, `owner` (owner away for too long), `bench` (bench lost or faulty), `ended` (session over).
+|hub -> owner |`queue_error` |`code`: a refusal: `unknown_kind` (no such kind for this setup), `full` (queue full), `already_queued`. `detail`: a text for logs, never shown; the editor says the refusal in the visitor's language from `code`, a generic text for any other.
+|hub -> spectator |`turn`, `turn_end` |As above, for a turn only, without `bench`.
+|===
+
+The editor keeps no queue state across connections: after every `hello` of
+the owner, the hub resends the `queue` or `turn` in progress, if any. A
+spectator who arrives during a turn receives that `turn` after the last
+`state`.
+
+`video`, when present, is the path of a WHEP endpoint (RFC 9725) that plays
+the bench filmed live during the turn, for the owner and the spectators. It is
+a path on the editor's own origin: it starts with `/` and never with `//`, and
+the editor ignores any other value, so that the token never leaves the origin.
+The page sends a complete offer (no trickle ICE, `iceServers` empty) as
+`POST <video>` with `Content-Type: application/sdp` and its own session token
+(`owner` or `viewer`) as `Authorization: Bearer`; a 201 carries the answer.
+It sends at most one offer every 2 s, retries while the turn lasts (the stream
+may start a few seconds after `turn`), and closes the connection at
+`turn_end`, deleting the WHEP resource (`Location`) if one was given. The hub
+may cut a player earlier, when its right ends; a player still allowed opens
+again by itself. Without `video` there is no video for this turn.
+
+== Optional extension: logic capture
+
+A hub may ask the owner for a *capture*: every edge of some probed pins over a
+stretch of simulated time, recorded first and sent afterwards in chunks, free
+of the limits of `events`. Picodev's hub uses it to let an agent read the logic
+analyser, through tools of its own that are not part of this project. This is
+optional: `picodev/hub-example/` does not implement it, and the editor does
+nothing until it receives `capture_start`.
+
+On the owner's live channel:
+
+[cols="1,1,4", options="header"]
+|===
+|Direction |`type` |Fields
+
+|hub -> owner |`capture_start` |`capture` (an id, at most 128 characters), `pins` (pin numbers), `duration_ms` (1 to 10,000, simulated time): record the edges of `pins` from the simulated instant this message arrives, for `duration_ms`.
+|owner -> hub |`capture_chunk` |`capture`, `seq` (from 0, no gap), `initial` (first chunk only: the level of each recorded pin at the start, `{"<pin>": 0\|1}`), `edges` (`[[t_us, pin, v], …]`), `last` (`true` on the final chunk).
+|owner -> hub |`capture_error` |`capture`, `detail` (English text, fixed whatever the page's language: it goes back to the agent): the recording is impossible or was interrupted.
+|===
+
+`t_us` is an integer, the simulated microseconds since the start; it never
+decreases (two pins may change at the same instant). `v` is 0 or 1, and the
+edges of a pin alternate from its `initial` level. A pin that has reported
+nothing since the simulation started is taken as low.
+
+The editor records only those of `pins` that the setup sheet probes and
+ignores the others. It answers `capture_error` when none is left, when the
+simulation is not running or when the tab is in the background (the browser
+then suspends the simulation). It also sends it when, during the recording,
+the simulation is stopped or started again (new code, pushed or not), the tab
+goes to the background, or another `capture_start` arrives: one capture at a
+time, the new one replaces the old. The visitor can also capture from the page,
+in the browser only (nothing is sent); a `capture_start` replaces such a
+capture too, and the page refuses to start one while the agent's is recording.
+
+The recording ends after `duration_ms` of simulated time, or at the
+200,001st edge: one more than a hub needs to keep, so that it can tell the
+capture was cut short. The editor then sends the chunks, each at most 64 KiB,
+one every 75 ms (a hub may refuse more than 20 in a second), independently of
+`events`, which go on as usual. An empty capture is one chunk with `initial`, no edges
+and `last`. If the channel drops while the chunks are being sent, the editor
+gives the capture up; the hub is expected to fail a capture that gets no
+`last` in time. Nothing of the capture goes to spectators.
+
+== Optional extension: circuit
+
+A hub may let an agent read and replace the circuit of the bench (components
+and wires). This is optional: `picodev/hub-example/` relays `circuit` inside
+`state` like any other field and sends no `circuit` message; without one the
+editor behaves as described above.
+
+`state` gains `circuit`: `{components, wires}`, the circuit on the bench, in
+the shape of the `circuit` of a setup sheet (the components and wires of a
+Velxio example):
+
+[source,json]
+----
+{"components": [{"type": "wokwi-led", "id": "led1", "x": 440, "y": 300,
+                 "properties": {"color": "red"}}],
+ "wires": [{"id": "w1", "start": {"componentId": "arduino-nano", "pinName": "6"},
+            "end": {"componentId": "led1", "pinName": "A"}, "color": "#ff4444"}]}
+----
+
+The board is not a component: wires name it by its id (the board kind, for
+example `arduino-nano`). Only plain properties are kept (strings of at most 256
+characters, numbers, booleans); the levels the simulation writes into a part
+while it runs are left out, and so are the hidden wires that seat a part on a
+breadboard. Besides the usual triggers, the editor sends a `state` (debounced)
+when the circuit changes. When the circuit has more than 40 components or
+120 wires, or weighs more than 48 KiB in JSON, `state` goes without it.
+
+[cols="1,1,4", options="header"]
+|===
+|Direction |`type` |Fields
+
+|hub -> owner |`circuit` |`components`, `wires`: replace the circuit with this one. In free mode only: in challenge mode the editor ignores the message, a level's circuit does not change. The editor stops the simulation, checks every component type against its own catalogue and every wire end against the pins of its component (or of the board), places the components without `x`/`y` on a free grid beside the others, replaces the circuit, then publishes `state`.
+|owner -> hub |`circuit_error` |`detail` (English text, fixed whatever the page's language): the circuit was refused (malformed, a component type the editor does not know, a board given as a component, a duplicate id, a wire to an unknown component or pin). Nothing was changed, and the simulation was not stopped.
+|===
+
+Component and wire ids match `[A-Za-z0-9_.-]{1,64}`. A circuit has at most
+40 components and 120 wires.
+
+== Optional extension: analog capture
+
+The same path as the logic capture (recorded first, then sent in chunks), on
+messages of its own: the logic capture does not change. Optional as well; the
+editor does nothing until it receives `analog_start`.
+
+A channel is a pin of the board, by its Arduino number (A0 to A7 are 14 to 21
+on an Uno or a Nano). Its value is a voltage: on an input of the converter
+(A0 to A7), the voltage the circuit applies to it; on any other pin, its logic
+level times the supply voltage (5 V). A PWM output thus shows as a square wave,
+not as its mean.
+
+[cols="1,1,4", options="header"]
+|===
+|Direction |`type` |Fields
+
+|hub -> owner |`analog_start` |`capture` (an id, at most 128 characters), `pins` (1 to 4 pin numbers), `duration_ms` (1 to 10,000, simulated time), `rate_hz` (100 to 10,000): sample `pins` at `rate_hz`, in simulated time, from the instant this message arrives.
+|owner -> hub |`analog_chunk` |`capture`, `seq` (from 0, no gap), `samples` (rows `[mv_1, …, mv_n]`, integer millivolts in the order of `pins`; row `k` of the whole capture is the instant `k / rate_hz`), `last` (`true` on the final chunk).
+|owner -> hub |`capture_error` |As for the logic capture; it also ends an analog capture.
+|===
+
+A capture has `max(1, floor(duration_ms × rate_hz / 1000))` rows, and at most
+200,000 samples in all (pins × rate_hz × duration_ms / 1000). The editor samples on the simulated clock of the
+processor, not on the frames of the page. It refuses (`capture_error`) a request
+out of these bounds, a board it cannot sample, a simulation that is not running
+and a tab in the background, and gives a recording up as for the logic capture:
+simulation stopped or started again, tab in the background, another
+`analog_start` or `capture_start` (one capture at a time, logic or analog). The
+chunks are sent like `capture_chunk`: at most 64 KiB each, one every 75 ms.
+Nothing of the capture goes to
+spectators.
+
+== Optional extension: session clock, pause and speed
+
+One clock per session ties what is seen (the scene, the traces) to what is
+measured (the captures): the simulated milliseconds since the last launch,
+back to 0 at each launch. A relay needs no change: `clock` travels inside
+`state`, and `t0_ms` inside the chunks.
+
+`state` gains `clock`: `{t_ms, speed, paused}`. `t_ms` is an integer, the
+simulated milliseconds since the launch at the time of the message (0 to
+2^53^); `speed` is the speed the owner chose against real time, one of 0.1,
+0.25, 0.5, 1, 2, 5 or 10 (the browser may fall short of a high one); `paused`
+is a boolean (`running` stays `true` while paused). Besides the usual triggers, the editor sends a `state`
+(debounced by 300 ms) on each pause, resume or change of speed. A malformed
+`clock` is left out of `state`; a spectator page shows the clock, the pause
+and the speed from it, and controls none of them.
+
+The first chunk of a capture, `capture_chunk` or `analog_chunk`, gains `t0_ms`:
+an integer, the instant of the start of the capture on that clock. `t_us` and
+the rows of samples are still counted from the start of the capture. A hub
+that receives no `t0_ms` keeps the capture valid.
+
+Only the owner pauses, resumes and sets the speed, from the page; no message
+of the hub does. A pause stops the simulation where it is, without a reset:
+the scene, the traces and the clock stop with it, and `Stop` still means a
+reset. Captures count in simulated time, so the speed does not change what
+they measure. A pause while the editor records a capture asked by `capture_start`
+or `analog_start` ends it with `capture_error`, `detail` `"The simulation was
+paused during the capture."`; a capture asked while paused is refused the
+same way as when the simulation is not running. A capture the visitor makes
+from the page waits for the resume instead. At ×0.1 a capture of 10 s of
+simulated time takes 100 s: a hub should wait for its `last` its duration × 10
+plus 60 s of real time.
+
+== Optional extension: messages of the operator
+
+Two more messages a hub may send to the owner. A relay may ignore them;
+`picodev/hub-example/` does not send them.
+
+[cols="1,1,4", options="header"]
+|===
+|Direction |`type` |Fields
+
+|hub -> owner |`notice` |`text`: a message from the people who run the hub (the session is about to be closed, made private…). The editor shows it as plain text, never as HTML, in a strip the visitor can dismiss, and copies it to the journal; it keeps the first 500 characters. It stays on screen after the session ends.
+|hub -> owner |`level` |`level`: the index of a level, from 0. In challenge mode the editor stops the simulation and goes to that level, as "Niveau suivant" does; it ignores an index the sheet does not have, and the message in free mode. Meant for trying a draft sheet (any level, below), and for moving a visitor on to the next level once every test of the current one is `passed`, as "Niveau suivant" does; a hub should not send a visitor any other index.
+|===
+
+== Optional extension: status
+
+`GET /status`::
+`{accepting, banner?, closed_setups}`. `accepting` is `false` while the hub
+takes no new session (maintenance); `closed_setups` lists the setup ids on which
+it takes none; `banner` is `{fr, en, until?}`, a short plain text per language
+and the ISO 8601 instant until which to show it.
+
+The editor reads it when a bench opens. It shows the banner in the page's
+language (French when English is missing) above the bench, as plain text, at most
+200 characters, and not after `until`. When the bench does not resume a session
+(no `?s=` in its address) and `accepting` is `false`, or the setup is in
+`closed_setups`, the simulation works as usual but the bench opens no session:
+no sharing, no queue, no agent. A strip above the bench says so ("Le labo est
+en maintenance : la simulation fonctionne, le partage et la file d'attente sont
+suspendus.", or "Ce montage est fermé pour l'instant : …"; in English "The lab
+is under maintenance: the simulation works, sharing and the queue are paused.",
+"This setup is closed for now: …"). Any error, a 404 included, means "nothing
+to say": the bench opens as usual.
+
+== Optional extension: draft setup sheets
+
+A hub may serve a setup sheet that is not published yet, for its own staff to
+try in the editor:
+
+`GET /drafts/<setup>/setup.json`, `GET /drafts/<setup>/scene.svg`, draft token::
+The sheet and its scene, with `Authorization: Bearer <draft token>`; 404 without
+the right token.
+
+The hub creates the session itself and hands out
+`/bench/<setup>/challenge?s=<session>#o=<owner token>&d=<draft token>`. With a
+`d` in the fragment and a `?s=`, the editor reads the sheet and the scene from
+these two paths, under `[hub] url`, instead of `<setups_url>/<setup>/`. The
+paths are fixed: the editor never takes a sheet address from its own URL. The
+token is taken out of the address with the owner token and kept in the tab's
+`sessionStorage` with the session, so a reload reads the draft again. The scene
+goes through the same cleaning as a served one. The editor resumes that session
+and never replaces it with a new one: when the hub refuses it, sharing is
+unavailable. It offers no queue on a draft.
+
+== Limits
+
+A server should bound what it keeps and relays. The example relay uses:
+
+[cols="3,2", options="header"]
+|===
+|Limit |Value
+
+|Size of a message or of an HTTP body |64 KiB
+|Spectators per session |20
+|Sessions open at the same time |200
+|Files in a push |8
+|===
+
+A public server should also limit sessions created per address and per minute
+(429), and check `setup`.
+
+== End of a session
+
+A server should end a session 10 minutes after its owner was last connected,
+or 4 hours after it was created, whichever comes first. It then sends `closed`
+with reason `ended` to the spectators, closes the owner's channel with 1008,
+and forgets everything about the session. The editor keeps no session state
+beyond its tokens: after a session ends, the bench keeps working offline.

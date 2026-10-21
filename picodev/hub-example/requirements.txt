@@ -1,0 +1,6 @@
+starlette==1.8.0
+uvicorn==0.54.0
+websockets==17.2
+# tests only
+httpx2==2.13.1
+pytest==9.1.1

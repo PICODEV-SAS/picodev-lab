@@ -1,0 +1,81 @@
+= Example relay
+:icons: font
+:source-highlighter: rouge
+
+WARNING: Example relay, not for production. One process, everything in memory
+(a restart forgets every session), no limit per address, no TLS, and any setup
+name is accepted without being checked.
+
+`relay.py` implements the live-sharing protocol of
+`picodev/docs/live-protocol.adoc`: sessions, visibility, the live channel, and
+an HTTP push for scripts and agents. It serves everything under `/hub`.
+
+== Run it
+
+[source,bash]
+----
+cd picodev/hub-example
+pip install -r requirements.txt && uvicorn relay:app --port 8765
+# or: uv run --no-project --with-requirements requirements.txt uvicorn relay:app --port 8765
+----
+
+== Point the editor at it
+
+The editor calls the hub on its own origin, so the relay must sit behind the
+same front proxy as the editor. Set `[hub] url = "/hub"` in the deployment file
+and route `/hub/` to the relay. The simplest front proxy is
+https://caddyserver.com[Caddy], which passes WebSockets with no extra setting.
+With the image running on port 8080 (see `picodev/README.adoc`):
+
+[source]
+----
+# Caddyfile, then: caddy run   (the lab is on http://localhost:8000)
+:8000 {
+	handle /hub/* {
+		reverse_proxy 127.0.0.1:8765
+	}
+	handle {
+		reverse_proxy 127.0.0.1:8080
+	}
+}
+----
+
+With nginx, the same in the `server` block:
+
+[source,nginx]
+----
+location /hub/ {
+    proxy_pass http://127.0.0.1:8765;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+}
+----
+
+Open a bench: the visibility menu appears in its header, with the spectator
+link.
+
+== Push code from a script
+
+A session created by a script returns an `agent` token. A human opens the
+owner link; the script then pushes code into that browser:
+
+[source,bash]
+----
+LAB=http://localhost:8000
+S=$(curl -s -X POST $LAB/hub/sessions -H 'Content-Type: application/json' \
+      -d '{"setup": "setup-a", "mode": "free"}')
+echo "open: $LAB/bench/setup-a?s=$(echo $S | jq -r .session)#o=$(echo $S | jq -r .owner)"
+# once the page is open:
+curl -s -X POST "$LAB/hub/sessions/$(echo $S | jq -r .session)/push" \
+  -H "Authorization: Bearer $(echo $S | jq -r .agent)" -H 'Content-Type: application/json' \
+  -d '{"files": [{"name": "sketch.ino", "content": "void setup() {}\nvoid loop() {}\n"}], "run": true}'
+----
+
+== Tests
+
+[source,bash]
+----
+pip install -r picodev/hub-example/requirements.txt
+python -m pytest picodev/hub-example -q
+----
