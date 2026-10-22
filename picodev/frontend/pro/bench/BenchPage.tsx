@@ -205,7 +205,9 @@ function Loader({ setupId, mode }: { setupId: string; mode: Mode }) {
 }
 
 function Workspace({ bench, mode }: { bench: Bench; mode: Mode }) {
-  const { sheet, sceneSvg, boardId, probe } = bench;
+  const { sheet, boardId, probe } = bench;
+  // Free mode edits the circuit, which the scene would no longer show: the schema only.
+  const sceneSvg = mode === 'free' ? undefined : bench.sceneSvg;
   const lang = getLang();
   const t = text();
   const levels = mode === 'challenge' ? sheet.levels : [];
@@ -595,13 +597,14 @@ function Workspace({ bench, mode }: { bench: Bench; mode: Mode }) {
       <div className="bench-view" data-view={view}>
         <span className="bench-view-label">
           <i />
-          {view === 'decor' ? t.sceneLabel : view === 'camera' ? t.cameraLabel : t.schemaLabel}
+          {view === 'decor' ? t.sceneLabel : view === 'camera' ? t.cameraLabel : mode === 'free' ? t.schemaEditable : t.schemaLabel}
         </span>
         <ViewSwitch scene={!!sceneSvg} camera={!!camera} view={view} onChange={setView} />
         <SimClock nowMs={probe.nowMs} running={running} paused={paused} />
         {/* The scene stays mounted: it follows the bench even when hidden. */}
         <div ref={scene} className="bench-scene" role="img" aria-label={t.sceneAria} hidden={view !== 'decor'} />
-        {view === 'schema' && tab === 'vue' && <Schema boardId={boardId} probes={sheet.probes} />}
+        {/* The schema stays mounted too: its parts follow the bench from the start. */}
+        <Schema boardId={boardId} probes={sheet.probes} probe={probe} running={running} editable={mode === 'free'} hidden={view !== 'schema'} />
         {view === 'camera' && camera && <Camera path={camera} token={hubInfo!.owner!} />}
       </div>
     ),

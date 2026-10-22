@@ -175,9 +175,14 @@ interface SimulatorCanvasProps {
    * top bar that doesn't reflow when the editor/canvas splitter moves.
    */
   headerSlot?: HTMLElement | null;
+  /**
+   * Also fit the zoom when a circuit loads, as on touch devices: for a canvas
+   * shown in a small box. Default: pan only on a desktop.
+   */
+  fitOnLoad?: boolean;
 }
 
-export const SimulatorCanvas = ({ headerSlot }: SimulatorCanvasProps = {}) => {
+export const SimulatorCanvas = ({ headerSlot, fitOnLoad = false }: SimulatorCanvasProps = {}) => {
   const { t } = useTranslation();
   const isTouchDevice = useIsCoarsePointer();
   // Mirror to a ref so the long-lived touch handler effect (deps deliberately
@@ -2542,7 +2547,7 @@ export const SimulatorCanvas = ({ headerSlot }: SimulatorCanvasProps = {}) => {
       // padding. On desktop, keep the existing behavior (pan only) so users
       // who set a custom zoom don't lose it on every load.
       let nextZoom = z;
-      if (isTouchDeviceRef.current) {
+      if (isTouchDeviceRef.current || fitOnLoad) {
         const PADDING = 32;
         const availW = Math.max(50, rect.width - PADDING * 2);
         const availH = Math.max(50, rect.height - PADDING * 2);

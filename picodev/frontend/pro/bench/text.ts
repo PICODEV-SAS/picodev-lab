@@ -57,7 +57,8 @@ const fr = {
   tabLog: 'Journal',
   tabTests: 'Tests',
   sceneLabel: 'Décor animé · simulation',
-  schemaLabel: 'Schéma · éditable plus tard',
+  schemaLabel: 'Schéma · câblage du banc',
+  schemaEditable: 'Schéma · modifiable',
   viewSwitch: 'Affichage du banc',
   scene: 'Décor',
   schema: 'Schéma',
@@ -191,7 +192,6 @@ const fr = {
   logic: 'Analyseur',
   simulated: 'simulé',
   legend: 'Légende',
-  probesLegend: 'Sondes du banc',
 
   // Capture (CapturePanel)
   capture: 'Capture logique',
@@ -297,7 +297,8 @@ const en: Text = {
   tabLog: 'Log',
   tabTests: 'Tests',
   sceneLabel: 'Animated scene · simulation',
-  schemaLabel: 'Schematic · editable later',
+  schemaLabel: 'Schematic · wiring of the bench',
+  schemaEditable: 'Schematic · editable',
   viewSwitch: 'Bench display',
   scene: 'Scene',
   schema: 'Schematic',
@@ -424,7 +425,6 @@ const en: Text = {
   scope: 'Oscilloscope',
   logic: 'Logic analyser',
   legend: 'Legend',
-  probesLegend: 'Probes of the bench',
   simulated: 'simulated',
 
   capture: 'Logic capture',

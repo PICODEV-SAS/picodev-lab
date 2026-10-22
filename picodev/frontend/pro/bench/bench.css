@@ -225,21 +225,31 @@ body:has(.bench) .picodev-attribution { display: none; }
 .bench-camera-freeze { position: absolute; bottom: 10px; right: 10px; z-index: 5; height: 30px; padding: 0 12px; border: 0; border-radius: 999px; background: rgba(11, 29, 51, 0.82); color: #FFFFFF; font-family: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }
 .bench-camera-freeze[aria-pressed="true"] { background: #FFFFFF; color: var(--b-navy); }
 .bench-camera-freeze:focus-visible { outline: 2px solid var(--b-coral); outline-offset: 2px; }
-/* Velxio's canvas as a picture: see Schema.tsx. */
-.bench-schema { background: #FAFBFC; pointer-events: none; overflow: hidden; }
+/* Velxio's canvas: a picture in a challenge, its editor in free mode. See Schema.tsx. */
+.bench-schema { background: #FAFBFC; overflow: hidden; }
+.bench-schema:not([data-editable]), .bench-schema:not([data-editable]) * { pointer-events: none !important; }
 .bench-schema-surface { position: absolute; top: 0; left: 0; width: 2400px; height: 1350px; transform-origin: 0 0; opacity: 0; }
-.bench-schema .zoom-controls, .bench-schema .canvas-header { display: none !important; }
-/* The probes over the schema (Schema.tsx), each in the colour of its trace: a ring for the scope, a square for the logic. */
-.bench-probe-mark { position: absolute; z-index: 4; width: 0; height: 0; }
+.bench-schema:not([data-editable]) .zoom-controls, .bench-schema:not([data-editable]) .canvas-header { display: none !important; }
+/* Editable: Velxio's header in a strip under the view's label, the canvas below it. */
+.bench-schema-tools { position: absolute; top: 46px; left: 8px; right: 8px; z-index: 6; overflow-x: auto; border-radius: 9px; background: var(--color-bg-elevated, #FFFFFF); box-shadow: 0 1px 3px rgba(11, 29, 51, 0.18); }
+.bench-schema[data-editable] .bench-schema-surface { top: 92px; right: 0; bottom: 0; width: auto; height: auto; }
+/* Velxio's Serial and Scope panels are not on the bench: the bench has its own. */
+.bench-schema-tools .canvas-serial-btn { display: none; }
+.bench-view:has(> .bench-schema[data-editable]:not([hidden])) { aspect-ratio: 1 / 1; }
+/* The probes over the schema, each in the colour of its trace: its wires drawn again, a ring (scope) or a square (logic) at the pin, its tag at the part. */
+.bench-probe-wires { position: absolute; inset: 0; z-index: 3; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
+.bench-probe-wires path { fill: none; stroke-width: 7px; stroke-opacity: 0.55; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+.bench-probe-mark { position: absolute; z-index: 4; width: 0; height: 0; pointer-events: none; }
 .bench-probe-mark::before { content: ''; position: absolute; left: -7px; top: -7px; width: 14px; height: 14px; border: 3px solid var(--c); border-radius: 999px; box-shadow: 0 0 0 1.5px var(--b-navy); }
 .bench-probe-mark[data-kind='logic']::before { border-radius: 3px; }
-/* A label lifted to another row keeps a line down to its pin. */
-.bench-probe-mark::after { content: ''; position: absolute; left: -1px; bottom: 7px; width: 2px; height: calc(var(--row, 0) * 22px + 4px); background: var(--c); }
+/* A pin no wire leaves: its label above it, on a row of its own when a neighbour's is there (palette.ts stagger), with a line down to its pin. */
+.bench-probe-mark:has(> span)::after { content: ''; position: absolute; left: -1px; bottom: 7px; width: 2px; height: calc(var(--row, 0) * 22px + 4px); background: var(--c); }
 .bench-probe-mark > span { position: absolute; left: 0; bottom: calc(11px + var(--row, 0) * 22px); transform: translateX(-50%); padding: 1px 6px; border-radius: 6px; background: var(--b-navy); color: #FFFFFF; font: 600 11px/1.4 var(--b-mono); white-space: nowrap; box-shadow: inset 0 -2px 0 var(--c); }
-.bench-probe-legend { position: absolute; top: 42px; left: 10px; z-index: 5; display: flex; flex-wrap: wrap; gap: 4px 12px; max-width: calc(100% - 20px); margin: 0; padding: 4px 10px; border-radius: 10px; background: rgba(11, 29, 51, 0.82); color: #FFFFFF; font-size: 12px; list-style: none; }
-.bench-probe-legend li, .bench-trace-legend li { display: flex; align-items: center; gap: 6px; }
-.bench-probe-legend li::before, .bench-trace-legend li::before { content: ''; width: 10px; height: 10px; border: 2.5px solid var(--c); border-radius: 999px; }
-.bench-probe-legend li[data-kind='logic']::before { border-radius: 2px; }
+.bench-probe-tag { position: absolute; z-index: 4; transform: translate(-50%, calc(-100% - 8px)); padding: 2px 8px 2px 6px; border-radius: 6px; background: var(--b-navy); color: #FFFFFF; font-size: 12px; font-weight: 600; line-height: 1.4; white-space: nowrap; pointer-events: none; display: flex; align-items: center; gap: 5px; }
+.bench-probe-tag::before { content: ''; width: 8px; height: 8px; border: 2.5px solid var(--c); border-radius: 999px; }
+.bench-probe-tag[data-kind='logic']::before { border-radius: 2px; }
+.bench-trace-legend li { display: flex; align-items: center; gap: 6px; }
+.bench-trace-legend li::before { content: ''; width: 10px; height: 10px; border: 2.5px solid var(--c); border-radius: 999px; }
 
 .bench-traces { flex: none; display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
 .bench-trace { display: flex; flex-direction: column; gap: 8px; padding: 10px; border: 1px solid var(--b-border); border-radius: 12px; background: var(--b-surface); }

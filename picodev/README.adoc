@@ -174,12 +174,17 @@ One fix, to propose upstream: the AVR loop of
 a frame's cycles. It counted instructions, which take 1 to 4 cycles, so the
 simulated clock ran about 1.5 times faster than real time.
 
+One prop, to propose upstream: `SimulatorCanvas` takes `fitOnLoad`, which fits
+the zoom when a circuit loads as it already does on touch devices, for a canvas
+shown in a small box. Unset, a desktop pans only, as before.
+
 [[bench]]
 == Bench workspace
 
 `/bench/<setup>` (free mode) and `/bench/<setup>/challenge` (challenge mode)
 are a page of the overlay, registered with Velxio's `registerProRoutes`; it
-replaces no Velxio page and patches no Velxio file. It reads a setup sheet
+replaces no Velxio page and patches no Velxio file but for the `fitOnLoad`
+prop above. It reads a setup sheet
 (its format is defined by a JSON Schema kept with the setups, outside this
 repository) from
 `<setups_url>/<setup>/setup.json`, loads its circuit and sketch as a Velxio
@@ -218,8 +223,13 @@ solve of the wiring does not overwrite them.
 setup's own texts come from the `i18n` of its sheet.
 
 |`Schema.tsx`, `Traces.tsx`, `monaco.ts`
-|Velxio's `SimulatorCanvas` shown as a read-only picture, with the sheet's
-probes marked at the board's pins (from its `pinInfo`) and a legend;
+|Velxio's `SimulatorCanvas`: a read-only picture in challenge mode, beside the
+animated scene; Velxio's editor in free mode, which has no scene (the visitor
+changes the circuit, the scene would no longer show it). Over it, the sheet's
+probes: the wires of a probed pin drawn again in its colour, a mark at the
+board's pin (from its `pinInfo`), a tag naming the pin and the instrument where
+the wire reaches the part. A pushbutton wired to a board pin is drawn pressed
+while the pin is low, so a press of a coupling shows as on the scene;
 read-only traces drawn from Velxio's oscilloscope store, the scope with a
 legend per trace; the workspace colours for Velxio's `CodeEditor` (its two
 Monaco theme names are redefined while the page is mounted, and restored
