@@ -261,10 +261,12 @@ it, and `picodev/hub-example/` does not implement it. Without it the editor
 behaves exactly as described above.
 
 `GET /benches`::
-`[{setup, kind, benches, free, waiting}]`: one object per pair, `benches` the
+`[{setup, kind, benches, free, waiting, status?}]`: one object per pair, `benches` the
 benches connected, `free` the free ones, `waiting` the places in the queue.
-The editor offers a button per `kind` that has at least one bench for its
-setup. Any error, a 404 included, means "no bench".
+`status` is `open` (the default when absent) or `soon`: a pair announced with no
+bench to join yet. The editor offers a button per `kind` that has at least one
+bench for its setup, and an inactive « Banc réel · bientôt » (« Real bench ·
+soon ») for a `soon` pair. Any error, a 404 included, means "no bench".
 
 On the owner's live channel:
 
@@ -277,7 +279,7 @@ On the owner's live channel:
 |hub -> owner |`queue` |`kind`, `position` (from 1), `waiting`, `eta_s` (estimated wait in seconds, an upper bound; 0 when a bench is free). Sent on joining and at every change.
 |hub -> owner |`turn` |`kind`, `bench` (its id), `ends_at` (Unix seconds, an integer), `video` (optional, see below): the turn starts.
 |hub -> owner |`turn_end` |`reason`: the place or the turn is over: `time`, `left`, `owner` (owner away for too long), `bench` (bench lost or faulty), `ended` (session over).
-|hub -> owner |`queue_error` |`code`: a refusal: `unknown_kind` (no such kind for this setup), `full` (queue full), `already_queued`. `detail`: a text for logs, never shown; the editor says the refusal in the visitor's language from `code`, a generic text for any other.
+|hub -> owner |`queue_error` |`code`: a refusal: `unknown_kind` (no such kind for this setup), `full` (queue full), `already_queued`, `soon` (the pair is announced, not open). `detail`: a text for logs, never shown; the editor says the refusal in the visitor's language from `code`, a generic text for any other.
 |hub -> spectator |`turn`, `turn_end` |As above, for a turn only, without `bench`.
 |===
 
@@ -462,16 +464,20 @@ Two more messages a hub may send to the owner. A relay may ignore them;
 == Optional extension: status
 
 `GET /status`::
-`{accepting, banner?, closed_setups}`. `accepting` is `false` while the hub
+`{accepting, banner?, closed_setups, soon_setups?, hidden_setups?}`. `accepting` is `false` while the hub
 takes no new session (maintenance); `closed_setups` lists the setup ids on which
-it takes none; `banner` is `{fr, en, until?}`, a short plain text per language
-and the ISO 8601 instant until which to show it.
+it takes none, `soon_setups` those coming soon (closed too) and `hidden_setups`
+those disabled (a list a hub does not send is empty); `banner` is `{fr, en, until?}`, a short plain text per language
+and the ISO 8601 instant until which to show it. On a setup of `hidden_setups`,
+the bench page says « Ce montage n'est pas disponible » (« This setup is not
+available ») with a link to the home page and loads no bench, unless it opens a
+draft (`#d=`).
 
 The editor reads it when a bench opens. It shows the banner in the page's
 language (French when English is missing) above the bench, as plain text, at most
 200 characters, and not after `until`. When the bench does not resume a session
 (no `?s=` in its address) and `accepting` is `false`, or the setup is in
-`closed_setups`, the simulation works as usual but the bench opens no session:
+`closed_setups` or `soon_setups`, the simulation works as usual but the bench opens no session:
 no sharing, no queue, no agent. A strip above the bench says so ("Le labo est
 en maintenance : la simulation fonctionne, le partage et la file d'attente sont
 suspendus.", or "Ce montage est fermé pour l'instant : …"; in English "The lab

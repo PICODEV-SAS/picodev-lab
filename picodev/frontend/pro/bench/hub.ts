@@ -405,6 +405,8 @@ export interface BenchOffer {
   benches: number;
   free: number;
   waiting: number;
+  /** v0.18: `soon` is announced, not joinable (no bench `enabled` yet); absent on the wire means `open`. */
+  status: 'open' | 'soon';
 }
 
 /** What the hub says of this session's place (owner), or of its turn (owner and spectators). */
@@ -413,7 +415,7 @@ export type QueueMessage =
   /** `bench` is not sent to spectators. `video`: the WHEP path of the bench's camera, same origin. */
   | { type: 'turn'; kind: string; bench?: string; ends_at: number; video?: string }
   | { type: 'turn_end'; reason: string }
-  /** `code`: unknown_kind, full, already_queued; anything else gets the generic text. The hub's `detail` is never shown. */
+  /** `code`: unknown_kind, full, already_queued, soon; anything else gets the generic text. The hub's `detail` is never shown. */
   | { type: 'queue_error'; code: string };
 
 const KIND_RE = /^[a-z0-9-]{1,32}$/;
@@ -495,7 +497,10 @@ export function queueView(view: QueueView, a: QueueAction): QueueView {
   }
 }
 
-/** The benches of `setup` (at least one connected), from `GET <hub>/benches`; [] when the hub has none or does not answer. */
+/**
+ * The benches of `setup` from `GET <hub>/benches`: the open couples (at least one connected) and,
+ * v0.18, the `soon` ones (announced, none to join); [] when the hub has none or does not answer.
+ */
 export async function fetchBenches(setup: string): Promise<BenchOffer[]> {
   try {
     const res = await fetch(`${HUB_URL}/benches`);
@@ -503,8 +508,10 @@ export async function fetchBenches(setup: string): Promise<BenchOffer[]> {
     const list: unknown = await res.json();
     if (!Array.isArray(list)) return [];
     return list
-      .filter((b) => b?.setup === setup && isKind(b.kind) && isCount(b.benches) && b.benches > 0 && isCount(b.free) && isCount(b.waiting))
-      .map(({ kind, benches, free, waiting }) => ({ setup, kind, benches, free, waiting }));
+      .filter((b) => b?.setup === setup && isKind(b.kind) && isCount(b.benches) && isCount(b.free) && isCount(b.waiting))
+      .map((b) => ({ ...b, status: b.status === undefined ? 'open' : b.status }))
+      .filter((b) => (b.status === 'open' && b.benches > 0) || b.status === 'soon')
+      .map(({ kind, benches, free, waiting, status }) => ({ setup, kind, benches, free, waiting, status }));
   } catch {
     return []; // a hub without benches (the example relay) answers 404
   }
@@ -515,7 +522,10 @@ export async function fetchBenches(setup: string): Promise<BenchOffer[]> {
 export interface LabStatus {
   /** False: maintenance, no new session. */
   accepting: boolean;
+  /** No new session on these: `closed_setups`, plus `soon_setups` (v0.18) for a hub that would not list them there. */
   closed: string[];
+  /** v0.18 `hidden_setups` (`disabled`): the bench page says the setup is not available. */
+  hidden: string[];
   /** In `lang`, plain text; absent when there is none to show now. */
   banner?: string;
 }
@@ -531,9 +541,12 @@ export async function fetchStatus(lang: Lang): Promise<LabStatus | null> {
     const b = r.banner as Record<string, unknown> | undefined;
     const said = b?.[lang] ?? b?.fr;
     const until = Date.parse(String(b?.until)); // NaN without `until`: no end
+    // A list a hub does not send (an older one) is empty.
+    const ids = (v: unknown) => (Array.isArray(v) ? v.filter((s): s is string => typeof s === 'string') : []);
     return {
       accepting: r.accepting !== false,
-      closed: Array.isArray(r.closed_setups) ? r.closed_setups.filter((s): s is string => typeof s === 'string') : [],
+      closed: [...new Set([...ids(r.closed_setups), ...ids(r.soon_setups)])],
+      hidden: ids(r.hidden_setups),
       ...(typeof said === 'string' && said.trim() && !(until <= Date.now()) && { banner: said.slice(0, MAX_BANNER) }),
     };
   } catch {

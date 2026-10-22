@@ -14,8 +14,9 @@ import { setLang } from '../lang';
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const NOW = 1_800_000_000; // Unix seconds
-const real: BenchOffer = { setup: 'setup-a', kind: 'real', benches: 1, free: 0, waiting: 2 };
-const sim: BenchOffer = { setup: 'setup-a', kind: 'sim', benches: 2, free: 1, waiting: 0 };
+const real: BenchOffer = { setup: 'setup-a', kind: 'real', benches: 1, free: 0, waiting: 2, status: 'open' };
+const sim: BenchOffer = { setup: 'setup-a', kind: 'sim', benches: 2, free: 1, waiting: 0, status: 'open' };
+const soon: BenchOffer = { setup: 'setup-a', kind: 'real', benches: 0, free: 0, waiting: 0, status: 'soon' };
 
 let root: Root;
 let box: HTMLDivElement;
@@ -46,6 +47,26 @@ describe('queue panel', () => {
   it('shows nothing without a bench for the setup', () => {
     render([], { phase: 'none' });
     expect(box.innerHTML).toBe('');
+  });
+
+  it('announces a bench coming soon with an inactive button (v0.18)', () => {
+    render([soon], { phase: 'none' });
+    expect(text()).toContain('Un banc réel arrive bientôt pour ce montage.');
+    const b = button('Banc réel · bientôt');
+    expect(b.textContent).toBe('Banc réel · bientôt');
+    expect(b.disabled).toBe(true);
+    act(() => b.click());
+    expect(on.onJoin).not.toHaveBeenCalled();
+    // Next to an open one: the open one can be joined, the other stays inactive.
+    render([sim, soon], { phase: 'none' });
+    expect(text()).toContain('Ce montage a aussi des bancs.');
+    expect(button('Passer sur le banc simulé').disabled).toBe(false);
+    expect(button('bientôt').disabled).toBe(true);
+  });
+
+  it('says a queue refused with code soon', () => {
+    render([soon], run({ type: 'queue_error', code: 'soon' }));
+    expect(text()).toContain('Ce banc arrive bientôt.');
   });
 
   it('offers one button per kind, with its label', () => {

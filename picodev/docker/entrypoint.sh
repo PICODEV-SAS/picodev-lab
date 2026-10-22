@@ -5,8 +5,10 @@ set -euo pipefail
 # The deployment file (PICODEV_CONFIG, optional) feeds the editor and nginx too.
 # A file that is named but missing or invalid stops the container here.
 mkdir -p /etc/nginx/lab
+# With [studio], a second server (conf.d/01-lab-studio.conf) with its own config.js.
 python /app/render_config.py "${PICODEV_CONFIG:-}" \
-  /usr/share/nginx/html/config.js /etc/nginx/conf.d/00-lab-zones.conf /etc/nginx/lab/server.inc
+  /usr/share/nginx/html/config.js /etc/nginx/conf.d/00-lab-zones.conf /etc/nginx/lab/server.inc \
+  /etc/nginx/lab/studio-config.js /etc/nginx/conf.d/01-lab-studio.conf
 nginx -t -q
 
 # Velxio silently skips app.pro when it fails to import; a restricted instance

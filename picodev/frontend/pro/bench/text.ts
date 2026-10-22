@@ -188,7 +188,12 @@ const fr = {
     unknown_kind: 'Ce type de banc n’est pas proposé pour ce montage.',
     full: 'La file est pleine pour le moment : réessayez un peu plus tard.',
     already_queued: 'Vous êtes déjà dans la file.',
+    soon: 'Ce banc arrive bientôt.',
   } as Record<string, string>,
+  soonBench: (kind: string) => `Un ${kind} arrive bientôt pour ce montage.`,
+  soonButton: (kind: string) => `${kind} · bientôt`,
+  setupHidden: 'Ce montage n’est pas disponible',
+  setupHiddenText: 'Il n’est pas proposé pour le moment.',
 
   // Traces
   scope: 'Oscilloscope',
@@ -426,7 +431,12 @@ const en: Text = {
     unknown_kind: 'This kind of bench is not offered for this setup.',
     full: 'The queue is full right now: try again a little later.',
     already_queued: 'You are already in the queue.',
+    soon: 'This bench is coming soon.',
   },
+  soonBench: (kind) => `A ${kind} is coming soon for this setup.`,
+  soonButton: (kind) => `${kind} · soon`,
+  setupHidden: 'This setup is not available',
+  setupHiddenText: 'It is not offered at the moment.',
 
   scope: 'Oscilloscope',
   logic: 'Logic analyser',

@@ -67,3 +67,14 @@ hidden_pages = ["pricing", "classroom", "about", "account", "docs", "blog"]
 # may "install": leave the key out to allow any library.
 cores = ["arduino:avr@1.8.6"]
 libraries = ["Servo@1.2.2"]
+
+[studio]
+# The setup studio: a second server of the container, on its own port, for the
+# administrator only (publish it on the host's loopback, never behind the public
+# proxy). The same editor without hidden_pages, plus /studio, where a setup is
+# drawn, checked, tried and downloaded as a .zip. The public server answers 404
+# on /studio. Absent: no second server, nothing changes.
+listen = 8082                       # port of the studio server in the container (not 80)
+hub_admin = "http://hub:8081"       # the hub's back-office: only /admin/api/setup-check, setup-zip and setup-try are relayed
+setups = "http://setups"            # where the studio server takes /setups/ from (the public proxy serves it on the public
+                                    # server); absent = /setups/ answers 404 there and the studio cannot open a setup

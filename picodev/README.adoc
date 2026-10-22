@@ -26,7 +26,8 @@ toc::[]
 |`picodev/frontend/pro/`
 |Editor overlay, plugged into Velxio's `@pro` alias at build time: attribution
 and source link, branding, hidden marketing pages, Picodev setups as examples,
-and the bench workspace in `bench/` (see <<bench>>).
+the bench workspace in `bench/` (see <<bench>>) and the setup studio in
+`studio/` (see <<studio>>).
 
 |`picodev/backend/pro/`
 |Backend overlay, copied to `backend/app/pro/` and loaded by Velxio's
@@ -37,7 +38,8 @@ and checks every compile and library request.
 |Tests of the backend overlay.
 
 |`picodev/docker/`
-|Image: `Dockerfile`, container `nginx.conf`, `entrypoint.sh`, and
+|Image: `Dockerfile`, container `nginx.conf` (the public server) and
+`nginx-app.conf` (what it shares with the studio server), `entrypoint.sh`, and
 `render_config.py`, which turns the deployment file into what the editor and
 nginx read.
 
@@ -110,6 +112,12 @@ deployment without a rebuild.
 |`picodev/docker/render_config.py` -> nginx includes
 |Landing redirect, hidden pages, refused routes, request size, rate limits per
 address. Values are checked against strict patterns before they reach nginx.
+
+|`picodev/docker/render_config.py` -> studio server
+|With a `[studio]` section only: a second nginx server on `listen`, its own
+`/config.js` (the same values plus `studio: true`), and the upstreams
+`hub_admin` and `setups` (see <<studio>>). Without the section, an empty file:
+nginx runs the public server alone.
 |===
 
 Only the toolchain is fixed when the image is built, because the running
@@ -340,6 +348,72 @@ fixed path: no sheet address is ever taken from the URL), offers no queue on it
 and never replaces its session. Without a hub, or with a hub that answers 404,
 none of this happens.
 
+Statuses (v0.18 of the hub, optional too): a pair of `GET <url>/benches` with
+`"status": "soon"` shows an inactive « Banc réel · bientôt » button (no status
+means open), and a refusal of the queue with code `soon` says « Ce banc arrive
+bientôt ». `GET <url>/status` may list `soon_setups`, handled like
+`closed_setups`, and `hidden_setups`: on one of those, `/bench/<setup>` says
+« Ce montage n'est pas disponible » with the link to the home page and loads no
+bench, unless it opens a draft (`#d=`). A list a hub does not send is empty.
+The bench page never reads the status of the index: a setup marked `soon` there
+but in none of the hub's lists (opened from the back-office) opens normally.
+
+[[studio]]
+== Setup studio
+
+`/studio` is Velxio's own editor, whole (circuit, sketch, compile and
+simulation), with a panel of the overlay (`picodev/frontend/pro/studio/`) for
+what Velxio does not know of a setup. It exists only on a second nginx server
+of the container, which a `[studio]` section of the deployment file turns on:
+
+[source,toml]
+----
+[studio]
+listen = 8082                  # port of the studio server in the container (not 80)
+hub_admin = "http://hub:8081"  # the hub's back-office
+setups = "http://setups"       # where /setups/ comes from (the public proxy serves it on the public server)
+----
+
+That server serves the same application with its own `/config.js` (`studio:
+true`, which registers the route), without the landing redirect nor
+`hidden_pages` (`/` goes to `/studio`); the refused routes and `/api/` are the
+public server's. It relays `/admin/api/setup-check`, `setup-zip` and
+`setup-try` to `hub_admin` with the browser's own `Host` and `Origin` (the
+hub's back-office checks them against the tunnel), and no other `/admin/` path;
+`/setups/` goes to `setups` (404 without the key). The upstream names are
+resolved when a request comes, with the container's name server, so the lab
+starts before the hub. The public server answers 404 on `/studio`. Publish the
+port on the host's loopback only: the studio has no login of its own. Without
+the section nothing changes.
+
+The panel:
+
+* *Nouveau* (id, title, a board of `allowedBoards`) or *Ouvrir* a setup of
+  `<setups_url>/index.json`, every status; `?open=<id>` opens one directly. Its
+  circuit and sketch go into the editor, the rest of the sheet into the panel.
+* The scene: `scene.svg` dropped, its element ids listed (the targets of
+  `scene.bindings`).
+* The rest of `setup.json` as JSON text (summary, libraries, probes,
+  couplings, scene bindings, levels and their tests, i18n); the studio writes
+  `schema`, `id`, `title`, `board` and `circuit` itself (the circuit in the
+  sheet's shape, `bench/circuit.ts`) and never `files`. `modes` and `status`
+  are not keys of the sheet: the modes come from `build.py` (the index), the
+  status from the hub's back-office.
+* One solution per level, `solutions/<level id>.ino`, typed or taken from the
+  editor's sketch.
+* *Vérifier* (`setup-check`), its problems shown under the part they name;
+  *Essayer* (`setup-try`, in Défi on the chosen level, in Libre when the sheet
+  has no level), which opens the hub's `open_url` (absolute, on the lab's public
+  origin, where the draft is served) in a new tab; *Télécharger le .zip*
+  (`setup-zip`).
+
+The folder sent as `files` is the one of the setups repositories, under
+`<id>/`: `setup.json`, the sketch files (`sketch.ino` first), `en/<file>` kept
+from the served sheet, the scene, `solutions/`. The draft is kept in the
+studio origin's `localStorage` (`picodev-lab:studio:<id>`), nothing on the
+server; « Revenir à la version servie » drops it. French or English, as the
+bench.
+
 == Build and test
 
 [source,bash]
@@ -357,8 +431,9 @@ docker build -f picodev/docker/Dockerfile --build-arg ARDUINO_LIBS="Servo@1.2.2"
 # Stock Velxio
 docker run --rm -p 8080:80 picodev-lab:dev
 
-# Restricted by the example file: http://localhost:8080/ redirects to Setup A
-docker run --rm -p 8080:80 -e PICODEV_CONFIG=/etc/velxio/lab.toml \
+# Restricted by the example file: http://localhost:8080/ redirects to Setup A;
+# its [studio] section opens the studio server on 8082 (http://127.0.0.1:8082/studio)
+docker run --rm -p 8080:80 -p 127.0.0.1:8082:8082 -e PICODEV_CONFIG=/etc/velxio/lab.toml \
   -v "$PWD/picodev/config/lab.example.toml:/etc/velxio/lab.toml:ro" picodev-lab:dev
 ----
 

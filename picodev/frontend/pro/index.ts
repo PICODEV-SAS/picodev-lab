@@ -11,6 +11,7 @@ import { createElement, lazy, Suspense } from 'react';
 import { BRAND_NAME, SOURCE_URL } from '@velxio/lib/deploymentConfig';
 import { registerProRoutes } from '@velxio/lib/proRoutes';
 import { ONLINE_ONLY_BOARD_ADS, ONLINE_ONLY_COMPONENT_ADS, suppressOnlineOnlyAds } from '@velxio/lib/onlineOnlyBoards';
+import { STUDIO } from './bench/config';
 
 const UPSTREAM_URL = 'https://velxio.dev';
 const UPSTREAM_SOURCE_URL = 'https://github.com/davidmonterocrespo24/velxio';
@@ -93,6 +94,12 @@ function brandTitles(): void {
 const BenchPage = lazy(() => import('./bench/BenchPage'));
 /** The spectator page of a hub session ([hub] url); without a hub it says so. */
 const SpectatorPage = lazy(() => import('./bench/SpectatorPage'));
+/**
+ * The setup studio (studio/StudioPage): only on the studio server, whose own
+ * /config.js says `studio` ([studio] of the deployment file). Elsewhere the
+ * route does not exist, and the public server answers 404 on /studio anyway.
+ */
+const StudioPage = lazy(() => import('./studio/StudioPage'));
 const bench = (mode: 'free' | 'challenge') =>
   createElement(Suspense, { fallback: null }, createElement(BenchPage, { mode }));
 
@@ -101,6 +108,7 @@ export const mountPro = (): void => {
     { path: 'bench/:setupId', element: bench('free') },
     { path: 'bench/:setupId/challenge', element: bench('challenge') },
     { path: 'w/:sessionId', element: createElement(Suspense, { fallback: null }, createElement(SpectatorPage)) },
+    ...(STUDIO ? [{ path: 'studio', element: createElement(Suspense, { fallback: null }, createElement(StudioPage)) }] : []),
   ]);
   // The hosted-only boards and parts (« ONLINE ») point to velxio.com: not offered here.
   suppressOnlineOnlyAds([...ONLINE_ONLY_BOARD_ADS, ...ONLINE_ONLY_COMPONENT_ADS].map((ad) => ad.id));

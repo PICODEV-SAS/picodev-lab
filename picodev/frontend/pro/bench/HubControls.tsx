@@ -154,6 +154,7 @@ export function QueuePanel({ offers, view, disabled, onJoin, onLeave, onSeen }: 
   const t = text();
   if (view.phase === 'none' && !offers.length) return null;
   const left = view.phase === 'turn' ? timeLeft(view.ends_at, now) : '';
+  const open = offers.filter((o) => o.status !== 'soon');
 
   return (
     <div className="bench-queue-slot">
@@ -187,15 +188,28 @@ export function QueuePanel({ offers, view, disabled, onJoin, onLeave, onSeen }: 
         ) : (
           <>
             <p>
-              <strong>{offers.length > 1 ? t.alsoBenches : t.alsoBench(kindLabel(offers[0].kind))}</strong> {t.takePlace}
+              {open.length ? (
+                <>
+                  <strong>{offers.length > 1 ? t.alsoBenches : t.alsoBench(kindLabel(offers[0].kind))}</strong> {t.takePlace}
+                </>
+              ) : (
+                <strong>{t.soonBench(kindLabel(offers[0].kind))}</strong>
+              )}
             </p>
             <div className="bench-queue-offers">
-              {offers.map((o) => (
-                <button key={o.kind} type="button" className="bench-btn" disabled={disabled} onClick={() => onJoin(o.kind)}>
-                  {t.goTo(kindLabel(o.kind))}
-                  <span>{o.free > 0 ? t.free(o.free) : t.queued(o.waiting)}</span>
-                </button>
-              ))}
+              {offers.map((o) =>
+                o.status === 'soon' ? (
+                  // v0.18: announced, nothing to join yet.
+                  <button key={o.kind} type="button" className="bench-btn" disabled>
+                    {t.soonButton(capital(kindLabel(o.kind)))}
+                  </button>
+                ) : (
+                  <button key={o.kind} type="button" className="bench-btn" disabled={disabled} onClick={() => onJoin(o.kind)}>
+                    {t.goTo(kindLabel(o.kind))}
+                    <span>{o.free > 0 ? t.free(o.free) : t.queued(o.waiting)}</span>
+                  </button>
+                ),
+              )}
             </div>
           </>
         )}

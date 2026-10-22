@@ -71,3 +71,90 @@ def test_values_that_would_break_out_of_nginx_syntax_are_refused(cfg):
         rc.frontend_config(cfg)
         rc.nginx_http(cfg)
         rc.nginx_server(cfg)
+
+
+STUDIO = {"listen": 8082, "hub_admin": "http://hub:8081", "setups": "http://setups"}
+
+
+def test_no_studio_section_changes_nothing():
+    cfg = {k: v for k, v in EXAMPLE.items() if k != "studio"}
+    assert rc.studio_section({}) is None and rc.studio_section(cfg) is None
+    assert rc.nginx_studio({}) == "" and rc.nginx_studio(cfg) == ""
+    assert "studio" not in rc.nginx_server(cfg)
+    assert "studio" not in rc.frontend_config(cfg)
+
+
+def test_studio_server(tmp_path):
+    cfg = {**EXAMPLE, "studio": STUDIO}
+    # The public server refuses the studio page; its config.js does not name it.
+    public = rc.nginx_server(cfg)
+    assert "location ~ ^/([a-z][a-z]/)?studio(/|$) { return 404; }" in public
+    assert '"studio"' not in rc.frontend_config(cfg)
+    # The studio's config.js: the same values, and the flag that registers /studio.
+    data = json.loads(rc.frontend_config(cfg, studio=True).removeprefix("window.__LAB_CONFIG__ = ").rstrip(";\n"))
+    assert data["studio"] is True and data["allowedBoards"] == ["arduino-nano", "arduino-uno"]
+
+    server = rc.nginx_studio(cfg, "127.0.0.11")
+    assert server.startswith("# The setup studio") and server.rstrip().endswith("}")
+    assert "listen 8082;" in server and "resolver 127.0.0.11 valid=30s ipv6=off;" in server
+    assert "alias /etc/nginx/lab/studio-config.js;" in server
+    # No hidden page, no landing: / goes to the studio. The refused routes and /api/ as on the public server.
+    assert "pricing" not in server and "/example/picodev-setup-a" not in server
+    assert "location = / { return 302 /studio; }" in server
+    assert "location ^~ /api/flash { return 404; }" in server
+    assert "limit_req zone=lab_compile burst=6 nodelay;" in server
+    # The three back-office requests, nothing else of /admin/.
+    for name in ("setup-check", "setup-zip", "setup-try"):
+        assert f"location = /admin/api/{name} {{" in server
+    assert "location ^~ /admin/ { return 404; }" in server
+    assert "set $studio_hub http://hub:8081;" in server and "proxy_set_header Host $http_host;" in server
+    assert "set $studio_setups http://setups;" in server and "location ^~ /setups/ {" in server
+    assert "studio(/|$) { return 404; }" not in server
+    assert server.count("include /etc/nginx/lab-app.conf;") == 1
+
+    # Without `setups`, the studio server serves no sheet; without a name server, no resolver line.
+    bare = rc.nginx_studio({"studio": {"listen": 9000, "hub_admin": "http://127.0.0.1:8081"}})
+    assert "location ^~ /setups/ { return 404; }" in bare and "resolver" not in bare
+
+
+def test_main_writes_the_studio_files(tmp_path):
+    conf = tmp_path / "lab.toml"
+    conf.write_text('[studio]\nlisten = 8082\nhub_admin = "http://hub:8081"\n')
+    out = [tmp_path / n for n in ("config.js", "zones.conf", "server.inc", "studio-config.js", "studio.conf")]
+    assert rc.main(["x", str(conf), *map(str, out)]) == 0
+    assert '"studio": true' in out[3].read_text() and "listen 8082;" in out[4].read_text()
+    # No section: an empty studio server file, no studio config.js.
+    conf.write_text("")
+    out[3].unlink()
+    assert rc.main(["x", str(conf), *map(str, out)]) == 0
+    assert out[4].read_text() == "" and not out[3].exists()
+    # Four arguments, as before: no studio file at all.
+    assert rc.main(["x", "", *map(str, out[:3])]) == 0
+
+
+def test_resolver_is_read_from_resolv_conf(tmp_path):
+    f = tmp_path / "resolv.conf"
+    f.write_text("search lan\nnameserver 127.0.0.11\nnameserver 1.1.1.1\n")
+    assert rc.resolv_conf_nameserver(str(f)) == "127.0.0.11"
+    f.write_text("nameserver ; evil\n")
+    assert rc.resolv_conf_nameserver(str(f)) is None
+    assert rc.resolv_conf_nameserver(str(tmp_path / "none")) is None
+    assert "resolver [fd00::1] valid" in rc.nginx_studio({"studio": STUDIO}, "fd00::1")
+
+
+@pytest.mark.parametrize("studio", [
+    "8082",
+    {"listen": 80, "hub_admin": "http://hub:8081"},
+    {"listen": "8082", "hub_admin": "http://hub:8081"},
+    {"listen": True, "hub_admin": "http://hub:8081"},
+    {"listen": 70000, "hub_admin": "http://hub:8081"},
+    {"listen": 8082},
+    {"listen": 8082, "hub_admin": "http://hub:8081/admin"},
+    {"listen": 8082, "hub_admin": "http://hub:8081; return 200"},
+    {"listen": 8082, "hub_admin": "ftp://hub"},
+    {"listen": 8082, "hub_admin": "http://hub:8081", "setups": "http://setups/setups"},
+    {"listen": 8082, "hub_admin": "http://hub:8081", "setups": 3},
+])
+def test_studio_values_that_would_break_nginx_are_refused(studio):
+    with pytest.raises(ValueError):
+        rc.nginx_studio({"studio": studio})

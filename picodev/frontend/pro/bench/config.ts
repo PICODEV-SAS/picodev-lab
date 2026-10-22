@@ -12,6 +12,8 @@ interface BenchConfig {
   homeUrl?: string;
   /** [hub] url: absent, the bench never calls a hub (v0.2 behaviour). */
   hubUrl?: string;
+  /** Set by the studio server's own /config.js only ([studio], v0.18): /studio is registered. */
+  studio?: boolean;
 }
 
 const runtime = (globalThis as { __LAB_CONFIG__?: BenchConfig }).__LAB_CONFIG__ ?? {};
@@ -21,3 +23,5 @@ export const EXIT_URL = runtime.exitUrl || '/';
 export const LOGO_URL = runtime.logoUrl || '';
 export const HOME_URL = runtime.homeUrl || '/';
 export const HUB_URL = (runtime.hubUrl || '').replace(/\/+$/, '');
+/** On the studio server ([studio] of the deployment file): the editor serves /studio. */
+export const STUDIO = runtime.studio === true;

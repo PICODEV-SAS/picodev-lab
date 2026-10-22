@@ -125,6 +125,8 @@ export default function BenchPage({ mode }: { mode: Mode }) {
 function Loader({ setupId, mode }: { setupId: string; mode: Mode }) {
   const [bench, setBench] = useState<Bench | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** v0.18: a setup the hub lists in `hidden_setups` (disabled): no bench at all. */
+  const [hidden, setHidden] = useState(false);
   const t = text();
 
   useEffect(() => {
@@ -138,6 +140,11 @@ function Loader({ setupId, mode }: { setupId: string; mode: Mode }) {
     (async () => {
       const [fetched, status] = await Promise.all([fetchSetup(setupId), fetchStatus(getLang())]);
       if (cancelled) return;
+      // A draft tried from the back-office opens even when the served setup is disabled.
+      if (!fetched.draft && status?.hidden.includes(setupId)) {
+        setHidden(true);
+        return;
+      }
       const paused = hubPaused(status, setupId);
       // In the language of this page load, starting sketch included; a saved sketch wins.
       const loaded = { ...fetched, sheet: localizeSheet(fetched.sheet, getLang()) };
@@ -187,6 +194,18 @@ function Loader({ setupId, mode }: { setupId: string; mode: Mode }) {
     };
   }, [setupId]);
 
+  if (hidden) {
+    return (
+      <Message title={t.setupHidden}>
+        <p>{t.setupHiddenText}</p>
+        <p>
+          <a className="bench-btn bench-btn-primary" href={HOME_URL}>
+            {t.backHome}
+          </a>
+        </p>
+      </Message>
+    );
+  }
   if (error) {
     return (
       <Message title={t.notFound}>

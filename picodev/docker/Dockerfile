@@ -56,6 +56,7 @@ COPY picodev/backend/pro/ ./app/pro/
 
 RUN rm -f /etc/nginx/sites-enabled/default
 COPY picodev/docker/nginx.conf /etc/nginx/conf.d/default.conf
+COPY picodev/docker/nginx-app.conf /etc/nginx/lab-app.conf
 COPY --from=frontend /app/frontend/dist /usr/share/nginx/html
 COPY picodev/docker/entrypoint.sh picodev/docker/render_config.py picodev/docker/logging.json /app/
 RUN chmod +x /app/entrypoint.sh

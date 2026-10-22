@@ -459,8 +459,23 @@ describe('bench hub client, queue (v0.4)', () => {
         { setup: 'setup-a', kind: 'BAD', benches: 1, free: 1, waiting: 0 },
       ],
     });
-    expect(await fetchBenches('setup-a')).toEqual([{ setup: 'setup-a', kind: 'real', benches: 1, free: 0, waiting: 2 }]);
+    expect(await fetchBenches('setup-a')).toEqual([{ setup: 'setup-a', kind: 'real', benches: 1, free: 0, waiting: 2, status: 'open' }]);
     expect(fetchMock).toHaveBeenCalledWith('/hub/benches');
+
+    // v0.18: a `soon` couple is listed with no bench; an unknown status is dropped.
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => [
+        { setup: 'setup-a', kind: 'real', benches: 0, free: 0, waiting: 0, status: 'soon' },
+        { setup: 'setup-a', kind: 'sim', benches: 1, free: 1, waiting: 0, status: 'open' },
+        { setup: 'setup-a', kind: 'sim-2', benches: 1, free: 1, waiting: 0, status: 'later' },
+        { setup: 'setup-a', kind: 'sim-3', benches: 0, free: 0, waiting: 0, status: 'open' },
+      ],
+    });
+    expect(await fetchBenches('setup-a')).toEqual([
+      { setup: 'setup-a', kind: 'real', benches: 0, free: 0, waiting: 0, status: 'soon' },
+      { setup: 'setup-a', kind: 'sim', benches: 1, free: 1, waiting: 0, status: 'open' },
+    ]);
 
     fetchMock.mockResolvedValue({ ok: false, status: 404, json: async () => ({ detail: 'Not Found' }) });
     expect(await fetchBenches('setup-a')).toEqual([]); // a relay without benches
@@ -526,14 +541,21 @@ describe('bench hub client, back-office extensions (v0.7)', () => {
     const { fetchStatus } = await import('../hub');
     const banner = { fr: 'Coupure à 18 h', en: 'Down at 6 pm', until: '2999-01-01T00:00:00Z' };
     fetchMock.mockResolvedValue({ ok: true, json: async () => ({ accepting: false, banner, closed_setups: ['setup-a', 3] }) });
-    expect(await fetchStatus('en')).toEqual({ accepting: false, closed: ['setup-a'], banner: 'Down at 6 pm' });
+    expect(await fetchStatus('en')).toEqual({ accepting: false, closed: ['setup-a'], hidden: [], banner: 'Down at 6 pm' });
     expect(fetchMock).toHaveBeenCalledWith('/hub/status', { cache: 'no-cache' });
 
     fetchMock.mockResolvedValue({ ok: true, json: async () => ({ accepting: true, banner: { fr: 'x'.repeat(300) }, closed_setups: [] }) });
-    expect(await fetchStatus('en')).toEqual({ accepting: true, closed: [], banner: 'x'.repeat(200) }); // French when English is missing
+    expect(await fetchStatus('en')).toEqual({ accepting: true, closed: [], hidden: [], banner: 'x'.repeat(200) }); // French when English is missing
 
     fetchMock.mockResolvedValue({ ok: true, json: async () => ({ accepting: true, banner: { ...banner, until: '2000-01-01T00:00:00Z' }, closed_setups: [] }) });
-    expect(await fetchStatus('fr')).toEqual({ accepting: true, closed: [] }); // over
+    expect(await fetchStatus('fr')).toEqual({ accepting: true, closed: [], hidden: [] }); // over
+
+    // v0.18: soon setups are closed (even from a hub that would not list them in closed_setups), disabled ones hidden.
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ accepting: true, closed_setups: ['setup-b', 'setup-x'], soon_setups: ['setup-b', 'setup-c', 7], hidden_setups: ['setup-x'] }),
+    });
+    expect(await fetchStatus('fr')).toEqual({ accepting: true, closed: ['setup-b', 'setup-x', 'setup-c'], hidden: ['setup-x'] });
 
     fetchMock.mockResolvedValue({ ok: false, status: 404 }); // a relay without status
     expect(await fetchStatus('fr')).toBeNull();
@@ -543,15 +565,25 @@ describe('bench hub client, back-office extensions (v0.7)', () => {
 
   it('pauses the hub session on maintenance or a closed setup, never a session in progress', async () => {
     const { hubPaused } = await import('../hub');
-    const open = { accepting: true, closed: [] as string[] };
+    const open = { accepting: true, closed: [] as string[], hidden: [] as string[] };
     setAddress('/bench/setup-a');
     expect(hubPaused(null, 'setup-a')).toBeNull(); // no hub, or no status
     expect(hubPaused(open, 'setup-a')).toBeNull();
     expect(hubPaused({ ...open, accepting: false }, 'setup-a')).toBe('maintenance');
     expect(hubPaused({ ...open, closed: ['setup-a'] }, 'setup-a')).toBe('closed');
     expect(hubPaused({ ...open, closed: ['setup-b'] }, 'setup-a')).toBeNull();
+    // v0.18: the hub's lists rule over the index. A setup marked "soon" in the index but in no list
+    // (opened by the administrator) opens; the bench page never reads the index status.
+    const lists = await (async () => {
+      fetchMock.mockResolvedValue({ ok: true, json: async () => ({ accepting: true, closed_setups: [], soon_setups: [], hidden_setups: [] }) });
+      const { fetchStatus } = await import('../hub');
+      return (await fetchStatus('fr'))!;
+    })();
+    expect(hubPaused(lists, 'setup-b')).toBeNull();
+    expect(lists.hidden).not.toContain('setup-b');
+    expect(fetchMock).not.toHaveBeenCalledWith(expect.stringContaining('index.json'), expect.anything());
     setAddress('/bench/setup-a/challenge?s=try123'); // resumed, a try session's included
-    expect(hubPaused({ accepting: false, closed: ['setup-a'] }, 'setup-a')).toBeNull();
+    expect(hubPaused({ ...open, accepting: false, closed: ['setup-a'] }, 'setup-a')).toBeNull();
   });
 
   it('asks nothing without a hub', async () => {
