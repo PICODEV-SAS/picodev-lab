@@ -32,6 +32,7 @@ interface CardHoverApi {
 }
 import type { BoardKind } from '../types/board';
 import { BOARD_KIND_LABELS } from '../types/board';
+import { isBoardAllowed } from '../lib/deploymentConfig';
 import { isProBoardKind } from '../lib/proBoardGate';
 import {
   getProBoard,
@@ -307,9 +308,10 @@ export const ComponentPickerModal: React.FC<ComponentPickerModalProps> = ({
   }, [searchQuery, selectedCategory, registry, isLoading, registryVersion, proBoardsVersion]);
 
 
-  // Boards list: static OSS kinds + overlay-registered boards (proBoardRegistry).
+  // Boards list: static OSS kinds + overlay-registered boards (proBoardRegistry),
+  // limited to the deployment's allowed boards like the board picker.
   const allBoards = useMemo(() => {
-    return [...ALL_BOARDS, ...(listProBoards().map((d) => d.kind) as BoardKind[])];
+    return [...ALL_BOARDS, ...(listProBoards().map((d) => d.kind) as BoardKind[])].filter(isBoardAllowed);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [proBoardsVersion]);
 

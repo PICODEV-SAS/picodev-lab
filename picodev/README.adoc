@@ -142,8 +142,9 @@ behaviour when unset. The editor reads each value from `window.__LAB_CONFIG__`
 
 |`allowedBoards`
 |`VITE_ALLOWED_BOARDS`
-|Board kinds offered in the new project dialog, the board picker and the
-examples gallery.
+|Board kinds offered in the new project dialog, the board picker, the boards
+of the component picker (so no PRO board outside the list) and the examples
+gallery.
 
 |`defaultBoard`
 |`VITE_DEFAULT_BOARD`
@@ -186,13 +187,17 @@ One prop, to propose upstream: `SimulatorCanvas` takes `fitOnLoad`, which fits
 the zoom when a circuit loads as it already does on touch devices, for a canvas
 shown in a small box. Unset, a desktop pans only, as before.
 
+One fix, to propose upstream: the boards row of `ComponentPickerModal` goes
+through `isBoardAllowed`, as the board picker does. It listed every board,
+the PRO ones (Raspberry Pi, STM32) included, whatever `allowedBoards` said.
+
 [[bench]]
 == Bench workspace
 
 `/bench/<setup>` (free mode) and `/bench/<setup>/challenge` (challenge mode)
 are a page of the overlay, registered with Velxio's `registerProRoutes`; it
 replaces no Velxio page and patches no Velxio file but for the `fitOnLoad`
-prop above. It reads a setup sheet
+prop and the picker's board list above. It reads a setup sheet
 (its format is defined by a JSON Schema kept with the setups, outside this
 repository) from
 `<setups_url>/<setup>/setup.json`, loads its circuit and sketch as a Velxio
