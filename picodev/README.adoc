@@ -280,7 +280,11 @@ the setup (`GET <url>/benches`, optional), the bench offers to join their queue
 its time left, and lets the visitor give it back; the spectator page shows the
 turn. A turn with `video` (optional, a WHEP path on the same origin) shows the
 bench filmed live in place of the scene, to the owner and the spectators, with
-the browser's WebRTC and the session token. On `capture_start` (optional too), the bench records every edge of the
+the browser's WebRTC and the session token. During a turn on a bench that is not `sim`, the
+browser simulates nothing: Lancer compiles and the program goes to the bench's
+board through the hub, the schema goes back to the sheet's circuit (the bench's
+wiring) and cannot be edited, an agent's `circuit` is refused, and the traces
+say they are not the bench's analyser. On `capture_start` (optional too), the bench records every edge of the
 asked probe pins over a stretch of simulated time and sends the record in
 chunks; it records, it never measures nor decodes. `state` carries the
 circuit (components and wires, in the setup sheet's shape); in free mode the

@@ -273,6 +273,23 @@ function Workspace({ bench, mode }: { bench: Bench; mode: Mode }) {
     setViewFor(camera);
     setView(camera ? 'camera' : sceneSvg ? 'decor' : 'schema');
   }
+  // A turn on a real bench: the program goes to its board, the browser simulates nothing, and
+  // the circuit is the bench's wiring, which no edit changes.
+  const realTurn = queue.phase === 'turn' && queue.kind !== 'sim';
+  /** The circuit as loaded from the sheet: what a real bench is wired as. */
+  const benchCircuit = useRef<Pick<ReturnType<typeof useSimulatorStore.getState>, 'components' | 'wires'> | null>(null);
+  benchCircuit.current ??= { components: useSimulatorStore.getState().components, wires: useSimulatorStore.getState().wires };
+  useEffect(() => {
+    if (!realTurn) return;
+    now.current.halt();
+    const sim = useSimulatorStore.getState();
+    const { components, wires } = benchCircuit.current!;
+    if (sim.components === components && sim.wires === wires) return;
+    sim.setComponents(components);
+    sim.setWires(wires);
+    sim.recalculateAllWirePositions();
+    say(text().logBenchCircuit);
+  }, [realTurn]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /** The current run: a token to drop late answers, and what to undo on stop. */
   const run = useRef({ token: 0, undo: [] as Array<() => void> });
@@ -320,8 +337,8 @@ function Workspace({ bench, mode }: { bench: Bench; mode: Mode }) {
 
   // The hub ([hub] url): the session, what the bench publishes, what the agent sends.
   // The callbacks read `now`, so the connection outlives the renders.
-  const now = useRef({ launch, goToLevel, levelIndex, running, results, halt, paused, speed, fromAgent });
-  now.current = { launch, goToLevel, levelIndex, running, results, halt, paused, speed, fromAgent };
+  const now = useRef({ launch, goToLevel, levelIndex, running, results, halt, paused, speed, fromAgent, realTurn });
+  now.current = { launch, goToLevel, levelIndex, running, results, halt, paused, speed, fromAgent, realTurn };
   useEffect(() => {
     if (!hubOn) return;
     // A part's type as the sheet (or the agent) wrote it; Velxio keeps the catalogue id only.
@@ -394,6 +411,7 @@ function Workspace({ bench, mode }: { bench: Bench; mode: Mode }) {
    * circuit is replaced. Refused: nothing changes.
    */
   async function replaceCircuit(pushed: PushedCircuit, types: Map<string, string>): Promise<string | null> {
+    if (now.current.realTurn) return 'The session is on a real bench: its circuit is the bench\'s wiring and cannot change.';
     await registry.load();
     const boardEl = document.getElementById(boardId);
     const why = checkCircuit(pushed, boardId, pinNames(boardEl), catalogue);
@@ -462,6 +480,11 @@ function Workspace({ bench, mode }: { bench: Bench; mode: Mode }) {
     if (!program || token !== run.current.token) return;
     if (program === agentHex.current) hub.current?.publishCompile(true, text().logProgram, program, 'agent');
 
+    if (now.current.realTurn) {
+      // publishCompile sent it to the bench, which flashes it (one load per 10 s at most).
+      say(text().logSentToBench);
+      return;
+    }
     sim.compileBoardProgram(boardId, program);
     sim.clearBoardSerialOutput(boardId);
     useOscilloscopeStore.getState().clearSamples();
@@ -597,23 +620,24 @@ function Workspace({ bench, mode }: { bench: Bench; mode: Mode }) {
       <div className="bench-view" data-view={view}>
         <span className="bench-view-label">
           <i />
-          {view === 'decor' ? t.sceneLabel : view === 'camera' ? t.cameraLabel : mode === 'free' ? t.schemaEditable : t.schemaLabel}
+          {view === 'decor' ? t.sceneLabel : view === 'camera' ? t.cameraLabel : mode === 'free' && !realTurn ? t.schemaEditable : t.schemaLabel}
         </span>
         <ViewSwitch scene={!!sceneSvg} camera={!!camera} view={view} onChange={setView} />
         <SimClock nowMs={probe.nowMs} running={running} paused={paused} />
         {/* The scene stays mounted: it follows the bench even when hidden. */}
         <div ref={scene} className="bench-scene" role="img" aria-label={t.sceneAria} hidden={view !== 'decor'} />
         {/* The schema stays mounted too: its parts follow the bench from the start. */}
-        <Schema boardId={boardId} probes={sheet.probes} probe={probe} running={running} editable={mode === 'free'} hidden={view !== 'schema'} />
+        <Schema boardId={boardId} probes={sheet.probes} probe={probe} running={running} editable={mode === 'free' && !realTurn} hidden={view !== 'schema'} />
         {view === 'camera' && camera && <Camera path={camera} token={hubInfo!.owner!} />}
       </div>
     ),
     traces: sheet.probes.length > 0 && (
       <div className="bench-traces">
+        {realTurn && <p className="bench-traces-note">{t.tracesNotReal}</p>}
         {(['scope', 'logic'] as const).map((kind) => probesOf(kind).length > 0 && <Traces key={kind} kind={kind} probes={probesOf(kind)} nowMs={probe.nowMs} live={running} />)}
       </div>
     ),
-    capture: probesOf('logic').length > 0 && <CapturePanel recorder={bench.recorder} probes={probesOf('logic')} running={running} />,
+    capture: probesOf('logic').length > 0 && !realTurn && <CapturePanel recorder={bench.recorder} probes={probesOf('logic')} running={running} />,
     serial: (
       <div className="bench-serial">
         <div>
