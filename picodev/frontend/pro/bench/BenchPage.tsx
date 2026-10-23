@@ -6,7 +6,7 @@
  * tests). Everything it shows about the bench comes from the setup sheet;
  * names and links come from the deployment file.
  */
-import { Fragment, useEffect, useReducer, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { Fragment, useEffect, useMemo, useReducer, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { useParams } from 'react-router-dom';
 import { CodeEditor } from '@velxio/components/editor/CodeEditor';
 import { i18n, loadLocale } from '@velxio/i18n';
@@ -16,6 +16,7 @@ import registry from '@velxio/services/ComponentRegistry';
 import { claimPartPin, releasePartPins } from '@velxio/simulation/partPinOwnership';
 import { ADC_PIN_MAP } from '@velxio/simulation/spice/connectAnalogInputsToMcu';
 import { startSimulation } from '@velxio/simulation/spice/start';
+import { getVirtualI2cDevice } from './devices';
 import { useEditorStore } from '@velxio/store/useEditorStore';
 import { useOscilloscopeStore } from '@velxio/store/useOscilloscopeStore';
 import { getBoardPinManager, getBoardSimulator, useSimulatorStore } from '@velxio/store/useSimulatorStore';
@@ -35,7 +36,7 @@ import { fetchBenches, fetchStatus, hubPaused, queueView, SPEEDS, startOwner, wi
 import { AgentJournal, QueuePanel, VisibilityMenu, type AgentCall } from './HubControls';
 import { getLang, localizeSheet, localPath } from './lang';
 import { dropZone, Fold, Grip, moveTo, Splitter, step, useLayout, type Column, type Part, type Section } from './layout';
-import { LevelPanel, TestList } from './LevelPanel';
+import { LevelPanel, TestList, type AnswerState } from './LevelPanel';
 import { endSession, readHints, readLevel, readSpeed, saveHints, saveLevel, saveSpeed, sessionStart } from './levelMemory';
 import { setEditorReadOnly, themeMonaco } from './monaco';
 import { createProbe, type ProbedSim, type SimProbe } from './probe';
@@ -190,6 +191,16 @@ function Loader({ setupId, mode }: { setupId: string; mode: Mode }) {
       const kind = useSimulatorStore.getState().boards.find((b) => b.id === boardId)?.boardKind ?? (loaded.sheet.board.kind as BoardKind);
       const numbers = boardPins(partPins(registry.getById(kind)?.tagName, {}) ?? [], (name) => boardPinToNumber(kind, name), ADC_PIN_MAP[kind] ?? []);
 
+      // Seat any fixed-firmware controller boards (strictly after loadExample, which
+      // wipes boards). Their cross-board wires auto-rebind via the store subscription.
+      // Seat the fixed-firmware controller board(s). Their virtual I2C devices are
+      // (re)registered in launch() instead, because each run resets the main bus.
+      const store = useSimulatorStore.getState();
+      for (const c of loaded.sheet.controllers ?? []) {
+        if (!store.boards.find((b) => b.id === c.id)) store.addBoard(c.kind as never, c.x, c.y, c.id);
+        store.compileBoardProgram(c.id, c.hex); // fixed HEX straight in — no cloud compile
+      }
+
       const scope = useOscilloscopeStore.getState();
       scope.channels.forEach((c) => scope.removeChannel(c.id));
       loaded.sheet.probes.forEach((p) => scope.addChannel(boardId, p.pin, p.label));
@@ -302,11 +313,23 @@ function Workspace({ bench, mode }: { bench: Bench; mode: Mode }) {
   const [view, setView] = useState<View>(sceneSvg ? 'decor' : 'schema');
   // Défi resumes at the level reached in this browser; Libre has no levels.
   const [levelIndex, setLevelIndex] = useState(() => (levels.length ? readLevel(sheet.id, levels.length) : 0));
-  const [results, setResults] = useState<TestResult[]>([]);
-  const [passed, setPassed] = useState(false);
+  /** What the simulation run measured; the answer tests are not in it. */
+  const [runResults, setResults] = useState<TestResult[]>([]);
+  /** The hub's verdicts on the typed answers, kept until the level changes. */
+  const [answers, setAnswers] = useState<Record<string, TestResult>>({});
+  const [pendingAnswers, setPending] = useState<Record<string, AnswerState>>({});
+  const answersNow = useRef<Record<string, TestResult>>({});
+  const answerTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  /** What the hub hands the session (`secrets`), for the virtual devices: read when a run starts. */
+  const secrets = useRef<Record<string, string>>({});
   // The hints shown stay shown, per setup and level, in this browser.
   const hintsFor = (i: number) => (levels[i] ? readHints(sheet.id, levels[i].id, levels[i].hints.length) : 0);
   const [hints, setHints] = useState(() => hintsFor(levelIndex));
+  // One result per test of the level: a verdict, else the run's, else pending.
+  const resultsOf = (given: Record<string, TestResult>, ran: TestResult[]): TestResult[] =>
+    (levels[levelIndex]?.tests ?? []).map((t) => given[t.id] ?? ran.find((r) => r.id === t.id) ?? { id: t.id, status: 'pending' });
+  const results = useMemo(() => resultsOf(answers, runResults), [answers, runResults, levelIndex]); // eslint-disable-line react-hooks/exhaustive-deps
+  const passed = results.length > 0 && results.every((r) => r.status === 'passed');
   // The session counts from its start in this tab, not from the page load: a reload or a language change keeps it.
   const [startedAt] = useState(() => sessionStart(sheet.id, mode));
   const [tickMs, setTickMs] = useState(() => Date.now());
@@ -411,8 +434,8 @@ function Workspace({ bench, mode }: { bench: Bench; mode: Mode }) {
 
   // The hub ([hub] url): the session, what the bench publishes, what the agent sends.
   // The callbacks read `now`, so the connection outlives the renders.
-  const now = useRef({ launch, goToLevel, levelIndex, running, results, halt, paused, speed, fromAgent, realTurn });
-  now.current = { launch, goToLevel, levelIndex, running, results, halt, paused, speed, fromAgent, realTurn };
+  const now = useRef({ launch, goToLevel, levelIndex, running, results, answers, hints, halt, paused, speed, fromAgent, realTurn });
+  now.current = { launch, goToLevel, levelIndex, running, results, answers, hints, halt, paused, speed, fromAgent, realTurn };
   useEffect(() => {
     if (!hubOn) return;
     // A part's type as the sheet (or the agent) wrote it; Velxio keeps the catalogue id only.
@@ -426,6 +449,7 @@ function Workspace({ bench, mode }: { bench: Bench; mode: Mode }) {
         level: now.current.levelIndex,
         running: now.current.running,
         results: now.current.results,
+        hints: now.current.hints,
         circuit: circuitOf(useSimulatorStore.getState().components, useSimulatorStore.getState().wires, typeOf),
         clock: { t_ms: Math.round(probe.nowMs()), speed: now.current.speed, paused: now.current.paused },
       }),
@@ -459,6 +483,27 @@ function Workspace({ bench, mode }: { bench: Bench; mode: Mode }) {
       },
       // As "Niveau suivant": a try session's agent skips levels, a visitor's moves on once passed; Libre has none.
       level: (i) => i < levels.length && now.current.goToLevel(i),
+      verdict(test, ok, error) {
+        // A verdict in flight during a level change belongs to no test of this level.
+        if (levels[now.current.levelIndex]?.tests.find((x) => x.id === test)?.spec.type !== 'answer') return;
+        clearTimeout(answerTimers.current[test]);
+        if (error) {
+          setPending((p) => ({ ...p, [test]: { status: 'idle', error } }));
+          return;
+        }
+        const t = text();
+        const result: TestResult = { id: test, status: ok ? 'passed' : 'failed', detail: ok ? t.answerRight : t.answerWrong };
+        // The ref follows every verdict at once; the state is updated functionally, so two verdicts before a render both stay.
+        const given = (answersNow.current = { ...answersNow.current, [test]: result });
+        setAnswers((a) => ({ ...a, [test]: result }));
+        const cur = now.current;
+        const merged = levels[cur.levelIndex].tests.map((x) => given[x.id] ?? cur.results.find((r) => r.id === x.id));
+        if (ok && merged.every((r) => r?.status === 'passed')) say(t.logPassed(cur.levelIndex + 1));
+        setPending((p) => ({ ...p, [test]: { status: 'idle' } }));
+      },
+      secrets: (given) => {
+        secrets.current = given;
+      },
       circuit: (pushed) => replaceCircuit(pushed, types),
       sim: () => getBoardSimulator(boardId) as unknown as AnalogSim | null,
       board: bench.pins,
@@ -518,7 +563,22 @@ function Workspace({ bench, mode }: { bench: Bench; mode: Mode }) {
     return null;
   }
 
-  useEffect(() => hub.current?.publishState(), [levelIndex, running, results, paused, speed]);
+  useEffect(() => () => Object.values(answerTimers.current).forEach(clearTimeout), []);
+
+  /** The visitor typed an answer: the hub decides (verdict), and says so within 10 s or the field reopens. */
+  function onAnswer(test: string, value: string) {
+    const t = text();
+    clearTimeout(answerTimers.current[test]);
+    if (!hub.current?.submitAnswer(test, value)) {
+      setPending((p) => ({ ...p, [test]: { status: 'idle', error: t.answerOffline } }));
+      return;
+    }
+    say(t.logAnswer(test));
+    setPending((p) => ({ ...p, [test]: { status: 'waiting' } }));
+    answerTimers.current[test] = setTimeout(() => setPending((p) => ({ ...p, [test]: { status: 'idle', error: text().answerTimeout } })), 10_000);
+  }
+
+  useEffect(() => hub.current?.publishState(), [levelIndex, running, results, hints, paused, speed]);
 
   // The hub's benches for this setup (v0.4), read once; then the hub pushes them (`benches`, v0.20).
   // None, and the bench is unchanged. A draft has none.
@@ -545,6 +605,9 @@ function Workspace({ bench, mode }: { bench: Bench; mode: Mode }) {
     probe.reset();
     const sim = useSimulatorStore.getState();
     if (sim.boards.find((b) => b.id === boardId)?.running) sim.stopBoard(boardId);
+    for (const c of sheet.controllers ?? []) {
+      if (sim.boards.find((b) => b.id === c.id)?.running) sim.stopBoard(c.id);
+    }
   }
 
   /**
@@ -567,6 +630,27 @@ function Workspace({ bench, mode }: { bench: Bench; mode: Mode }) {
       return;
     }
     sim.compileBoardProgram(boardId, program);
+    // compileBoardProgram's loadHex resets the main board's I2C bus and re-adds the
+    // engine's default demo devices, so our controllers' virtual devices must be
+    // re-registered here too, on every run. Fresh instance = fresh challenge state.
+    if ((sheet.controllers?.length ?? 0) > 0) {
+      const boardSim = getBoardSimulator(boardId) as unknown as {
+        addI2CDevice?: (d: unknown) => void;
+        removeI2CDevice?: (addr: number, bus?: number) => void;
+      } | null;
+      // Strip the engine's default demo devices (RTC 0x68, temp 0x48, EEPROM 0x50):
+      // a challenge bus should carry only its target, not confusing extras.
+      for (const addr of [0x48, 0x50, 0x68]) boardSim?.removeI2CDevice?.(addr, 0);
+      for (const c of sheet.controllers ?? []) {
+        if (!c.i2cDevice || !boardSim?.addI2CDevice) continue;
+        const make = getVirtualI2cDevice(c.i2cDevice);
+        if (!make) continue;
+        const cid = c.id;
+        boardSim.addI2CDevice(
+          make(() => ((getBoardSimulator(cid) as unknown as { getCurrentCycles?: () => number })?.getCurrentCycles?.() ?? 0) / 16000, secrets.current),
+        );
+      }
+    }
     sim.clearBoardSerialOutput(boardId);
     useOscilloscopeStore.getState().clearSamples();
     probe.reset();
@@ -576,20 +660,21 @@ function Workspace({ bench, mode }: { bench: Bench; mode: Mode }) {
     run.current.undo.push(applyCouplings(sheet.couplings ?? [], probe));
     simulator()?.setSpeed?.(speed);
     sim.startBoard(boardId);
+    // Start the controller board(s) together with the player board (fresh scene clock).
+    for (const c of sheet.controllers ?? []) sim.startBoard(c.id);
     say(text().logStarted);
     const level = levels[levelIndex];
     if (!level) return;
-    setPassed(false);
     const tests = runLevel(level, probe, setResults, getLang());
     run.current.undo.push(() => tests.cancel());
     tests.done
       .then((final) => {
         if (token !== run.current.token) return;
         setResults(final);
-        const ok = final.length > 0 && final.every((r) => r.status === 'passed');
-        setPassed(ok);
+        // The level passes on the merged results (answer tests included); the score counts what the run measured.
         const t = text();
-        say(ok ? t.logPassed(levelIndex + 1) : t.logScore(levelIndex + 1, final.filter((r) => r.status === 'passed').length, final.length));
+        if (resultsOf(now.current.answers, final).every((r) => r.status === 'passed')) say(t.logPassed(levelIndex + 1));
+        else if (final.length) say(t.logScore(levelIndex + 1, final.filter((r) => r.status === 'passed').length, final.length));
       })
       .catch(() => {});
   }
@@ -683,7 +768,11 @@ function Workspace({ bench, mode }: { bench: Bench; mode: Mode }) {
     setLevelIndex(i);
     saveLevel(sheet.id, i);
     setResults([]);
-    setPassed(false);
+    setAnswers({});
+    answersNow.current = {};
+    setPending({});
+    Object.values(answerTimers.current).forEach(clearTimeout);
+    answerTimers.current = {};
     setHints(hintsFor(i));
   }
 
@@ -759,6 +848,9 @@ function Workspace({ bench, mode }: { bench: Bench; mode: Mode }) {
         levels={levels}
         index={levelIndex}
         results={results}
+        answers={pendingAnswers}
+        onAnswer={onAnswer}
+        offline={hubStatus !== 'live'}
         passed={passed}
         hintsShown={hints}
         onHint={() => {
@@ -818,7 +910,7 @@ function Workspace({ bench, mode }: { bench: Bench; mode: Mode }) {
               <h3>
                 {t.levelOf(levelIndex + 1, levels.length)} · {level.title}
               </h3>
-              <TestList level={level} results={results} />
+              <TestList level={level} results={results} answers={pendingAnswers} onAnswer={onAnswer} />
               <p>{t.testsRun(seconds1(level.timeout_ms / 1000, t.locale))}</p>
             </>
           ) : sheet.levels.length > 0 ? (

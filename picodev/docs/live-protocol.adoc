@@ -145,6 +145,10 @@ as up once the socket is open.
 
 === From the owner
 
+The bench also sends `answer` (v0.21): `test`, `value` (at most 200
+characters), the visitor's answer to an `answer` test, to which the hub replies
+with a `verdict`. While the hub is not reachable the answer field is disabled.
+
 The server relays these three to every spectator, and keeps the last `state`
 to send it first to a spectator who arrives later. Earlier `events` are not
 replayed.
@@ -157,7 +161,9 @@ replayed.
 |`setup` (setup id), `mode` (`free` or `challenge`), `files`
 (`[{name, content}]`), `level` (index of the current level, from 0), `running`
 (boolean), `results` (results of the current level's tests), and the optional
-`circuit` and `clock` of the extensions below. Sent after
+`circuit` and `clock` of the extensions below, and `hints` (v0.21: the number
+of hints of the current level the visitor has revealed in the bench, back to 0
+at each level change). Sent after
 every `hello` and, debounced by 300 ms, whenever the bench changes. The server
 keeps and relays the whole object. When the message would exceed 64 KiB, the
 editor sends it without `files` and with `"files_omitted": true`; the
@@ -188,6 +194,22 @@ with `[…]`.
 [cols="1,5", options="header"]
 |===
 |`type` |Fields
+
+|`verdict`
+|v0.21. `test` (id of an `answer` test), `ok` (boolean), `error` (optional,
+French text). The hub's decision on an answer typed in the bench (or sent by an
+agent); the hub, not the browser, holds the expected value. With `error` the
+answer was not examined (rate limit, unknown test): the result does not change,
+the bench shows the reason and reopens the field. A verdict for a test that is
+not an `answer` test of the current level is dropped. Without a verdict within
+10 s the bench reopens the field itself.
+
+|`secrets`
+|v0.21. `secrets`: `{"<name>": "<value>"}`, sent after `viewers` at each
+connection of the owner, when the setup sheet declares some. The bench keeps
+them in memory and gives them to the virtual devices it creates at the next run
+(the Ghostlight device reveals `secrets.flag`; without it, an offline value).
+Never sent to a spectator. A flag must fit the 32 bytes of an I2C read.
 
 |`push`
 |`files` (`[{name, content}]`, 1 to 8 files, names matching

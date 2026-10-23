@@ -46,6 +46,8 @@ export interface BenchState {
   level: number;
   running: boolean;
   results: TestResult[];
+  /** Hints shown so far on this level. */
+  hints: number;
   /** The circuit on the bench (v0.8); left out when larger than a hub keeps. */
   circuit?: Circuit;
   /** The session clock (v0.12); left out when malformed. */
@@ -821,6 +823,10 @@ export interface OwnerHooks {
   notice?(text: string): void;
   /** `level`: go to this level (index, unchecked against the sheet). */
   level?(index: number): void;
+  /** `verdict`: the hub's decision on an answer; `error` is French text for the visitor. */
+  verdict?(test: string, ok: boolean, error?: string): void;
+  /** `secrets`: values per test id, to feed the simulation (a virtual device). */
+  secrets?(secrets: Record<string, string>): void;
   /**
    * `circuit` (v0.8, free mode only): replace the bench's circuit with this
    * one, its shape checked. Resolves to null once done, or to why it is
@@ -844,6 +850,8 @@ export interface OwnerLink {
   /** `queue_join` / `queue_leave`; false when the channel is down (nothing sent). */
   joinQueue(kind: string): boolean;
   leaveQueue(): boolean;
+  /** Sends the visitor's answer to an `answer` test; false when the channel is down (nothing sent). */
+  submitAnswer(test: string, value: string): boolean;
   /** The simulation was stopped or is about to start again: a capture being recorded is lost. */
   halted(reason: 'stop' | 'relaunch'): void;
   /** The owner paused the simulation (v0.12): the agent's capture being recorded ends; the page's waits. */
@@ -981,6 +989,18 @@ export function startOwner(sheet: SetupSheet, mode: string, probe: BenchProbe, h
             // The detail for the console only, in English.
             console.warn('bench: the hub refused a message,', String(msg.code), String(msg.ref), String(msg.detail ?? '').slice(0, 500));
             break;
+          case 'verdict':
+            if (typeof msg.test === 'string' && typeof msg.ok === 'boolean')
+              hooks.verdict?.(msg.test, msg.ok, typeof msg.error === 'string' ? msg.error : undefined);
+            break;
+          case 'secrets': {
+            const raw = msg.secrets;
+            if (!raw || typeof raw !== 'object' || Array.isArray(raw)) break;
+            const secrets: Record<string, string> = {};
+            for (const [k, v] of Object.entries(raw)) if (typeof v === 'string') secrets[k] = v;
+            hooks.secrets?.(secrets);
+            break;
+          }
           default: {
             const q = queueMessage(msg);
             if (q) hooks.queue?.(q);
@@ -1022,6 +1042,7 @@ export function startOwner(sheet: SetupSheet, mode: string, probe: BenchProbe, h
     },
     joinQueue: (kind) => !!live?.send({ type: 'queue_join', kind }),
     leaveQueue: () => !!live?.send({ type: 'queue_leave' }),
+    submitAnswer: (test, value) => !!live?.send({ type: 'answer', test, value }),
     halted(reason) {
       if (!shared) recorder.halted(reason); // a shared one is the page's to tell
       sampler?.halted(reason);

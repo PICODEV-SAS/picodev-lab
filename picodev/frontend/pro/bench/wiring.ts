@@ -57,6 +57,9 @@ export function wiresOn(pin: number, wires: PlainWire[], boardId: string, number
   });
 }
 
+/** The wires of `on` that end on a part: not on another board (`boardIds`). */
+export const partEnds = (on: ReturnType<typeof wiresOn>, boardIds: string[]) => on.filter(({ far }) => !boardIds.includes(far.componentId));
+
 /**
  * The board pin of each of `parts` wired straight to the board (a wire from
  * one of the part's pins to a numbered board pin). Wired through another

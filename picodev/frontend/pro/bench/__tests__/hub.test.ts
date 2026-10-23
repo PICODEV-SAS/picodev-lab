@@ -54,7 +54,7 @@ const sheet = {
   levels: [],
 } as unknown as SetupSheet;
 
-const state = { setup: 'setup-a', mode: 'free' as const, files: [{ name: 'sketch.ino', content: 'void setup(){}' }], level: 0, running: false, results: [] };
+const state = { setup: 'setup-a', mode: 'free' as const, files: [{ name: 'sketch.ino', content: 'void setup(){}' }], level: 0, running: false, results: [], hints: 0 };
 
 function setAddress(path: string) {
   const url = new URL(path, 'https://lab.example');
@@ -1284,5 +1284,36 @@ describe('bench hub client, v0.20', () => {
     expect(await withShare(href, null)).toBe(href);
     expect(await withShare(href, { session: 'abc123' })).toBe(href); // no owner token
     expect(fetchMock.mock.calls.length).toBe(calls);
+  });
+});
+
+describe('bench hub client, answers', () => {
+  it('verdict and secrets reach the hooks', async () => {
+    const { startOwner } = await import('../hub');
+    const h = { ...hooks(), verdict: vi.fn(), secrets: vi.fn() };
+    startOwner(sheet, 'challenge', fakeProbe().probe, h);
+    await vi.runOnlyPendingTimersAsync();
+    const ws = FakeSocket.all[0];
+    ws.accept();
+
+    ws.deliver({ type: 'verdict', test: 'a1', ok: false, error: 'Non.' });
+    ws.deliver({ type: 'verdict', test: 'a2', ok: true });
+    ws.deliver({ type: 'verdict', test: 3, ok: true });
+    ws.deliver({ type: 'verdict', test: 'a3', ok: 'yes' });
+    ws.deliver({ type: 'secrets', secrets: { a1: 'x', a2: 7 } });
+    ws.deliver({ type: 'secrets', secrets: 'x' });
+    expect(h.verdict.mock.calls).toEqual([['a1', false, 'Non.'], ['a2', true, undefined]]);
+    expect(h.secrets.mock.calls).toEqual([[{ a1: 'x' }]]);
+  });
+
+  it('submitAnswer sends {type:answer, test, value}, false when the channel is down', async () => {
+    const { startOwner } = await import('../hub');
+    const link = startOwner(sheet, 'challenge', fakeProbe().probe, hooks());
+    expect(link.submitAnswer('a1', 'early')).toBe(false);
+    await vi.runOnlyPendingTimersAsync();
+    const ws = FakeSocket.all[0];
+    ws.accept();
+    expect(link.submitAnswer('a1', 'secret')).toBe(true);
+    expect(ws.ofType('answer')).toEqual([{ type: 'answer', test: 'a1', value: 'secret' }]);
   });
 });

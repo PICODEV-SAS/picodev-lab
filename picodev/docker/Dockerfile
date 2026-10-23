@@ -61,7 +61,7 @@ COPY --from=frontend /app/frontend/dist /usr/share/nginx/html
 COPY picodev/docker/entrypoint.sh picodev/docker/render_config.py picodev/docker/logging.json /app/
 COPY picodev/docker/externalize_scripts.py /tmp/
 # No inline script left in the pages: a CSP "script-src 'self'" needs no hash.
-RUN chmod +x /app/entrypoint.sh \
+RUN sed -i 's/\r$//' /app/entrypoint.sh && chmod +x /app/entrypoint.sh \
  && python /tmp/externalize_scripts.py /usr/share/nginx/html && rm /tmp/externalize_scripts.py
 
 ENV VELXIO_NEWS=off \

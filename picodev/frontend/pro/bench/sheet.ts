@@ -40,6 +40,11 @@ function check(data: unknown, setupId: string): SetupSheet {
   if (s.probes.some((p) => !Number.isInteger(p?.pin) || typeof p?.label !== 'string')) return fail('probes');
   if (s.levels.some((l) => typeof l?.title !== 'string' || !Array.isArray(l?.tests) || !Array.isArray(l?.hints)))
     return fail('levels');
+  if (s.controllers !== undefined) {
+    if (!Array.isArray(s.controllers)) return fail('controllers');
+    if (s.controllers.some((c) => typeof c?.id !== 'string' || typeof c?.kind !== 'string' || typeof c?.hex !== 'string'))
+      return fail('controllers');
+  }
   return s as SetupSheet;
 }
 

@@ -386,3 +386,22 @@ describe('runLevel: serial_contains', () => {
     });
   });
 });
+
+describe('runLevel: answer tests', () => {
+  it('answer tests are left to the page', async () => {
+    const { f, run, step, last } = start(
+      level([{ type: 'serial_contains', text: 'ok', within_ms: 500 }, { type: 'answer' }]),
+    );
+    expect(last().map((r) => r.id)).toEqual(['t0']);
+    f.serial('ok', 10);
+    step(100);
+    const results = await run.done;
+    expect(results.map((r) => r.id)).toEqual(['t0']);
+    expect(results[0].status).toBe('passed');
+  });
+
+  it('a level with only answer tests resolves at once', async () => {
+    const { run } = start(level([{ type: 'answer' }]));
+    expect(await run.done).toEqual([]);
+  });
+});

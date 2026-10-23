@@ -16,6 +16,7 @@
  */
 
 import type { AVRTWI, TWIEventHandler } from 'avr8js';
+import type { I2cBusEvent } from './I2cScopeShim';
 
 // ── Virtual I2C device interface ────────────────────────────────────────────
 
@@ -64,6 +65,13 @@ export class I2CBusManager implements TWIEventHandler {
   private activeExternal: I2CBusManager | null = null;
   /** When this bus is acting as the target of an external peer's master, this holds the addressed device. */
   private externalActiveDevice: I2CDevice | null = null;
+
+  /**
+   * Optional observer of master-side bus events, set by the simulator to drive
+   * the I2C scope shim (synthesize SDA/SCL waveforms for the logic analyzer).
+   * Pure observation — never affects routing.
+   */
+  public onBusEvent: ((ev: I2cBusEvent) => void) | null = null;
 
   /**
    * Construct a bus bound to an `I2CMaster`.  For backward
@@ -165,6 +173,7 @@ export class I2CBusManager implements TWIEventHandler {
   // ── TWIEventHandler implementation (master-side events from the local MCU) ──
 
   start(_repeated: boolean): void {
+    this.onBusEvent?.({ kind: 'start' });
     this.master.completeStart();
   }
 
@@ -176,6 +185,7 @@ export class I2CBusManager implements TWIEventHandler {
       this.activeDevice.stop();
     }
     this.activeDevice = null;
+    this.onBusEvent?.({ kind: 'stop' });
     this.master.completeStop();
   }
 
@@ -186,6 +196,7 @@ export class I2CBusManager implements TWIEventHandler {
       this.activeDevice = local;
       this.activeExternal = null;
       this.writeMode = write;
+      this.onBusEvent?.({ kind: 'addr', addr, write, ack: true });
       this.master.completeConnect(true);
       return;
     }
@@ -201,6 +212,7 @@ export class I2CBusManager implements TWIEventHandler {
         this.activeExternal = bridge;
         this.activeDevice = null;
         this.writeMode = write;
+        this.onBusEvent?.({ kind: 'addr', addr, write, ack: true });
         this.master.completeConnect(true);
         return;
       }
@@ -208,27 +220,30 @@ export class I2CBusManager implements TWIEventHandler {
     // 3. NACK — no device anywhere in the topology knows this address.
     this.activeDevice = null;
     this.activeExternal = null;
+    this.onBusEvent?.({ kind: 'addr', addr, write, ack: false });
     this.master.completeConnect(false);
   }
 
   writeByte(value: number): void {
+    let ack = false;
     if (this.activeDevice) {
-      this.master.completeWrite(this.activeDevice.writeByte(value));
+      ack = this.activeDevice.writeByte(value);
     } else if (this.activeExternal) {
-      this.master.completeWrite(this.activeExternal.handleExternalWrite(value));
-    } else {
-      this.master.completeWrite(false);
+      ack = this.activeExternal.handleExternalWrite(value);
     }
+    this.onBusEvent?.({ kind: 'write', value, ack });
+    this.master.completeWrite(ack);
   }
 
   readByte(_ack: boolean): void {
+    let value = 0xff;
     if (this.activeDevice) {
-      this.master.completeRead(this.activeDevice.readByte());
+      value = this.activeDevice.readByte();
     } else if (this.activeExternal) {
-      this.master.completeRead(this.activeExternal.handleExternalRead());
-    } else {
-      this.master.completeRead(0xff);
+      value = this.activeExternal.handleExternalRead();
     }
+    this.onBusEvent?.({ kind: 'read', value, ack: _ack });
+    this.master.completeRead(value);
   }
 
   // ── External-master inbound handlers (called by a bridged peer bus) ────

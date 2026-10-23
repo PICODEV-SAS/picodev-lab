@@ -36,6 +36,8 @@ import type { BenchProbe, Lang, Level, TestResult, TestSpec } from '../types';
  *   text split across chunks is found; carriage returns are ignored on both
  *   sides (`println` sends "\r\n"). Fails once `within_ms` is passed.
  *
+ * `answer` tests are left out of `results`: the hub decides them.
+ *
  * `done` resolves with the final results; after `cancel()` it resolves with
  * the results as they were, and `onUpdate` is not called again. The details
  * are written in `lang`.
@@ -48,7 +50,9 @@ export function runLevel(
 ): { done: Promise<TestResult[]>; cancel(): void } {
   const t0 = probe.nowMs();
   const log: Log = { pins: new Map(), serial: [] };
-  let results: TestResult[] = level.tests.map((t) => ({
+  // `answer` tests are decided by the hub, not by observation: the page shows them.
+  const tests = level.tests.filter((t) => t.spec.type !== 'answer');
+  let results: TestResult[] = tests.map((t) => ({
     id: t.id,
     status: 'pending',
   }));
@@ -59,8 +63,8 @@ export function runLevel(
 
   const unsubs: Array<() => void> = [];
   const watched = new Set<number>();
-  for (const { spec } of level.tests) {
-    if (spec.type === 'serial_contains') continue;
+  for (const { spec } of tests) {
+    if (spec.type === 'serial_contains' || spec.type === 'answer') continue;
     watched.add(spec.pin);
     if (spec.type === 'follows') watched.add(spec.source);
   }
@@ -73,7 +77,7 @@ export function runLevel(
       }),
     );
   }
-  if (level.tests.some((t) => t.spec.type === 'serial_contains')) {
+  if (tests.some((t) => t.spec.type === 'serial_contains')) {
     unsubs.push(
       probe.onSerial((text, tMs) => {
         if (tMs - t0 <= level.timeout_ms) log.serial.push({ t: tMs - t0, text });
@@ -103,7 +107,7 @@ export function runLevel(
       if (decided(r)) return r;
       const next = {
         id: r.id,
-        ...evaluate(level.tests[i].spec, log, now, over, SAY[lang]),
+        ...evaluate(tests[i].spec, log, now, over, SAY[lang]),
       };
       if (next.status !== r.status) changed = true;
       return next;
@@ -114,6 +118,7 @@ export function runLevel(
   const timer = setInterval(tick, POLL_MS);
 
   onUpdate(results);
+  if (!tests.length) stop(); // nothing to observe
   return { done, cancel: stop };
 }
 
@@ -313,5 +318,8 @@ function evaluate(spec: TestSpec, log: Log, now: number, over: boolean, say: Say
       if (now <= spec.within_ms && !over) return RUNNING;
       return failed(say.notReceived(shown, ms(Math.min(spec.within_ms, now))));
     }
+
+    case 'answer':
+      return RUNNING; // filtered out before; here for exhaustiveness only
   }
 }

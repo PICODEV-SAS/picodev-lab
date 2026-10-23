@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 // Velxio's own mapping, as the page hands it over.
 import { boardPinToNumber } from '../../../../../frontend/src/utils/boardPinMapping';
-import { boardPinOf, boardPins, wiresOn, type PlainWire } from '../wiring';
+import { boardPinOf, boardPins, partEnds, wiresOn, type PlainWire } from '../wiring';
 
 const end = (componentId: string, pinName: string, x = 0, y = 0) => ({ componentId, pinName, x, y });
 const wire = (id: string, a: ReturnType<typeof end>, b: ReturnType<typeof end>): PlainWire => ({ id, start: a, end: b, waypoints: [] });
@@ -62,5 +62,13 @@ describe('boardPinOf', () => {
   });
   it('does not find a button wired through another part', () => {
     expect(boardPinOf(['servo-2'], [wire('w', end('servo-2', '1'), end('resistor', '2'))], 'nano', number).size).toBe(0);
+  });
+});
+
+describe('partEnds', () => {
+  it('leaves out a wire that runs to another board (a controller), keeps one to a part', () => {
+    const on = wiresOn(19, [wire('scl', end('nano', 'A5', 1, 1), end('ctrl', 'A5', 500, 400)), wire('pull', end('nano', 'A5'), end('resistor', '1', 300, 300))], 'nano', number);
+    expect(on.map(({ far }) => far.componentId)).toEqual(['ctrl', 'resistor']);
+    expect(partEnds(on, ['nano', 'ctrl']).map(({ far }) => far.componentId)).toEqual(['resistor']);
   });
 });

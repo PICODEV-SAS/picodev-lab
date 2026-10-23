@@ -39,6 +39,8 @@ import { hexToUint8Array } from '../utils/hexParser';
 import { I2CBusManager, nullI2CMaster } from './I2CBusManager';
 import type { I2CDevice } from './I2CBusManager';
 import { attachUsiI2c } from './UsiI2cBridge';
+import { I2cScopeShim } from './I2cScopeShim';
+import { requestSimFrame, cancelSimFrame } from './simClock';
 
 /**
  * AVRSimulator - Emulates Arduino Uno (ATmega328p) using avr8js
@@ -326,6 +328,7 @@ export class AVRSimulator {
   public spi: AVRSPI | null = null;
   public usart: AVRUSART | null = null;
   public twi: AVRTWI | null = null;
+  private i2cScope: I2cScopeShim | null = null;
   // EEPROM peripheral + its backing store. The backend (the actual cells) is
   // created once and reused across firmware reloads and resets so written
   // values persist between boots, like real hardware (GitHub issue #203).
@@ -535,6 +538,15 @@ export class AVRSimulator {
       // any devices already registered + bridges already installed are
       // preserved across firmware (re)loads.
       this.i2cBus.attachMaster(this.twi);
+
+      // I2C scope shim: synthesize SDA/SCL bit-level waveforms from each TWI
+      // transaction so the logic analyzer can see I2C (TWI itself never toggles
+      // the pins). Analogous to emitUartTxFrame for UART.
+      this.i2cScope = new I2cScopeShim(
+        (pin, state, timeMs) => this.onPinChangeWithTime?.(pin, state, timeMs),
+        () => this.cpu?.cycles ?? 0,
+      );
+      this.i2cBus.onBusEvent = (ev) => this.i2cScope?.onEvent(ev);
 
       this.peripherals = [
         new AVRTimer(this.cpu, activeTimer0Config),
@@ -906,10 +918,10 @@ export class AVRSimulator {
         return;
       }
 
-      this.animationFrame = requestAnimationFrame(execute);
+      this.animationFrame = requestSimFrame(execute);
     };
 
-    this.animationFrame = requestAnimationFrame(execute);
+    this.animationFrame = requestSimFrame(execute);
   }
 
   /**
@@ -919,7 +931,7 @@ export class AVRSimulator {
   pause(): void {
     this.running = false;
     if (this.animationFrame !== null) {
-      cancelAnimationFrame(this.animationFrame);
+      cancelSimFrame(this.animationFrame);
       this.animationFrame = null;
     }
   }

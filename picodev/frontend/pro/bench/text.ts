@@ -112,6 +112,13 @@ const fr = {
   logReset: 'Code de départ rétabli.',
   logPassed: (i: number) => `Niveau ${i} franchi : tous les tests passent.`,
   logScore: (i: number, k: number, n: number) => `Niveau ${i} : ${k} test(s) sur ${n}.`,
+  logAnswer: (test: string) => `Réponse envoyée pour ${test}`,
+  answerPlaceholder: 'Votre réponse',
+  validate: 'Valider',
+  answerRight: 'Bonne réponse',
+  answerWrong: 'Mauvaise réponse',
+  answerOffline: 'Le hub n’est pas joignable : la réponse ne peut pas être vérifiée.',
+  answerTimeout: 'Pas de verdict du hub, réessayez.',
 
   // Level panel
   status: { pending: 'en attente', running: 'en cours sur le banc…', passed: 'réussi', failed: 'échoué' } as Record<TestStatus, string>,
@@ -123,6 +130,8 @@ const fr = {
   hint: (i: number) => `Indice ${i}.`,
   showHint: (i: number, n: number) => `Afficher un indice (${i} sur ${n})`,
   levelFoot: 'Les tests tournent sur le banc simulé, à chaque lancement.',
+  levelFootAnswer: 'Une réponse est vérifiée au moment où vous la validez.',
+  levelFootBoth: 'Les tests tournent sur le banc simulé à chaque lancement ; une réponse est vérifiée quand vous la validez.',
 
   // Visibility and agent
   visibility: {
@@ -386,6 +395,13 @@ const en: Text = {
   logReset: 'Starting code restored.',
   logPassed: (i) => `Level ${i} passed: every test passes.`,
   logScore: (i, k, n) => `Level ${i}: ${k} of ${n} test(s) passed.`,
+  logAnswer: (test) => `Answer sent for ${test}`,
+  answerPlaceholder: 'Your answer',
+  validate: 'Submit',
+  answerRight: 'Correct',
+  answerWrong: 'Wrong answer',
+  answerOffline: 'The hub cannot be reached: the answer cannot be checked.',
+  answerTimeout: 'No verdict from the hub, try again.',
 
   status: { pending: 'pending', running: 'running on the bench…', passed: 'passed', failed: 'failed' },
   statusPrefix: 'Status: ',
@@ -396,6 +412,8 @@ const en: Text = {
   hint: (i) => `Hint ${i}.`,
   showHint: (i, n) => `Show a hint (${i} of ${n})`,
   levelFoot: 'The tests run on the simulated bench, at every launch.',
+  levelFootAnswer: 'An answer is checked when you submit it.',
+  levelFootBoth: 'The tests run on the simulated bench at every launch; an answer is checked when you submit it.',
 
   visibility: {
     private: ['Private', 'No one but you.'],

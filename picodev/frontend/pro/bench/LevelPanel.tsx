@@ -1,14 +1,40 @@
 /** Left panel of the challenge mode: the level, its tests and its hints. */
+import { useId, type FormEvent } from 'react';
 import { text } from './text';
 import type { Level, TestResult } from './types';
 
-export function TestList({ level, results }: { level: Level; results: TestResult[] }) {
+/** An answer test's field: open (`idle`, maybe with the reason the last answer was refused) or waiting for the hub. */
+export interface AnswerState {
+  status: 'idle' | 'waiting';
+  error?: string;
+}
+
+interface TestListProps {
+  level: Level;
+  results: TestResult[];
+  answers?: Record<string, AnswerState>;
+  /** Absent: read-only (the spectator), no field. */
+  onAnswer?(test: string, value: string): void;
+  /** The hub cannot be reached: the field is closed and says why. */
+  offline?: boolean;
+}
+
+export function TestList({ level, results, answers, onAnswer, offline }: TestListProps) {
   const t = text();
+  const uid = useId();
   return (
     <ol className="bench-tests">
       {level.tests.map((test) => {
         const result = results.find((r) => r.id === test.id);
         const status = result?.status ?? 'pending';
+        const answer = answers?.[test.id];
+        const detailId = `${uid}-${test.id}-detail`;
+        const field = test.spec.type === 'answer' && !!onAnswer && status !== 'passed';
+        const submit = (e: FormEvent<HTMLFormElement>) => {
+          e.preventDefault();
+          const value = String(new FormData(e.currentTarget).get('answer') ?? '').trim();
+          if (value) onAnswer?.(test.id, value);
+        };
         return (
           <li key={test.id} data-status={status}>
             <span className="bench-test-mark" aria-hidden="true">
@@ -26,10 +52,18 @@ export function TestList({ level, results }: { level: Level; results: TestResult
             <span className="bench-test-text">
               <code>{test.id}</code>
               <span>{test.label}</span>
-              <span className="bench-test-state">
+              <span className="bench-test-state" id={detailId}>
                 <span className="bench-sr">{t.statusPrefix}</span>
-                {result?.detail || t.status[status]}
+                {(field && offline ? t.answerOffline : answer?.error || result?.detail) || t.status[status]}
               </span>
+              {field && (
+                <form className="bench-answer" onSubmit={submit}>
+                  <input type="text" name="answer" maxLength={200} autoComplete="off" disabled={offline || answer?.status === 'waiting'} placeholder={t.answerPlaceholder} aria-label={test.label} aria-describedby={detailId} />
+                  <button type="submit" className="bench-btn bench-btn-primary" disabled={offline || answer?.status === 'waiting'}>
+                    {t.validate}
+                  </button>
+                </form>
+              )}
             </span>
           </li>
         );
@@ -42,6 +76,9 @@ interface Props {
   levels: Level[];
   index: number;
   results: TestResult[];
+  answers?: Record<string, AnswerState>;
+  onAnswer?(test: string, value: string): void;
+  offline?: boolean;
   /** Every test of the current level passed on the last run. */
   passed: boolean;
   hintsShown: number;
@@ -50,10 +87,12 @@ interface Props {
   onFinish(): void;
 }
 
-export function LevelPanel({ levels, index, results, passed, hintsShown, onHint, onNext, onFinish }: Props) {
+export function LevelPanel({ levels, index, results, answers, onAnswer, offline, passed, hintsShown, onHint, onNext, onFinish }: Props) {
   const level = levels[index];
   const last = index === levels.length - 1;
   const t = text();
+  const answerCount = level.tests.filter((x) => x.spec.type === 'answer').length;
+  const foot = answerCount === 0 ? t.levelFoot : answerCount === level.tests.length ? t.levelFootAnswer : t.levelFootBoth;
   return (
     <aside className="bench-level" aria-labelledby="bench-level-title">
       <div className="bench-level-bars" role="img" aria-label={t.levelOf(index + 1, levels.length)}>
@@ -68,7 +107,7 @@ export function LevelPanel({ levels, index, results, passed, hintsShown, onHint,
       </div>
       <div className="bench-level-tests">
         <span className="bench-level-label">{t.levelRule}</span>
-        <TestList level={level} results={results} />
+        <TestList level={level} results={results} answers={answers} onAnswer={onAnswer} offline={offline} />
       </div>
       <div aria-live="polite" className="bench-level-next">
         {passed && (
@@ -102,7 +141,7 @@ export function LevelPanel({ levels, index, results, passed, hintsShown, onHint,
           )}
         </div>
       )}
-      <p className="bench-level-foot">{t.levelFoot}</p>
+      <p className="bench-level-foot">{foot}</p>
     </aside>
   );
 }

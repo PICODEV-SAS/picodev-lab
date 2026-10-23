@@ -209,6 +209,17 @@ One fix, to propose upstream: the boards row of `ComponentPickerModal` goes
 through `isBoardAllowed`, as the board picker does. It listed every board,
 the PRO ones (Raspberry Pi, STM32) included, whatever `allowedBoards` said.
 
+Engine hooks for the virtual I2C devices of a challenge (patches to carry, to
+propose upstream): `AVRSimulator.ts`, `I2CBusManager.ts`, `I2cScopeShim.ts` and
+`simClock.ts` let a JavaScript device answer as an I2C slave on a board's bus,
+clocked off another board, and make the bus traffic visible to the logic
+analyser. The devices themselves (Ghostlight) are not patches: they live in
+`picodev/frontend/pro/bench/devices/`, with their tests, and import the engine
+through the `@velxio` alias. A device holds no secret: it receives the session's
+`secrets` from the bench when a run starts (the hub pushes them, see
+`docs/live-protocol.adoc`), and falls back to a public offline value when there
+are none.
+
 [[bench]]
 == Bench workspace
 

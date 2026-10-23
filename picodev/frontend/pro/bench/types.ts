@@ -29,6 +29,18 @@ export interface SetupSheet {
   board: { kind: string; fqbn: string };
   /** The first file is the main sketch. */
   files: Array<{ name: string; content: string }>;
+  /**
+   * Extra fixed-firmware boards seated alongside the main board (e.g. a controller
+   * Nano running a pre-compiled HEX). `id` must NOT look like a board kind (use
+   * "ctrl"), or loadExample collapses its wires onto the main board. They start and
+   * stop with the main board; `fqbn` is documentation (the HEX is loaded directly).
+   */
+  controllers?: Array<{
+    id: string; kind: string; fqbn: string; hex: string; x: number; y: number;
+    /** Name of a virtual I2C device to register on the main bus, clocked off this
+     *  board (avr8js has no I2C slave, so a JS device answers in the sim). */
+    i2cDevice?: string;
+  }>;
   /** "Name@version", a subset of the deployed toolchain. */
   libraries: string[];
   /** Velxio's own example shape (components and wires). */
@@ -99,7 +111,9 @@ export type TestSpec =
   /** At least `count` (default 1) pulses at `level` lasting between `min_ms` and `max_ms`. */
   | { type: 'pulse'; pin: number; level: 'high' | 'low'; min_ms: number; max_ms: number; count?: number }
   /** The serial output contains `text` before `within_ms`. */
-  | { type: 'serial_contains'; text: string; within_ms: number };
+  | { type: 'serial_contains'; text: string; within_ms: number }
+  /** Decided by the hub from the visitor's typed answer, never by observing the simulation. */
+  | { type: 'answer' };
 
 // ── What the engines see of the simulation ──────────────────────────────────
 

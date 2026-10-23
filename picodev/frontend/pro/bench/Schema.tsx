@@ -30,7 +30,7 @@ import type { PushedCircuit } from './circuit';
 import { probeMarks, stagger, toView } from './palette';
 import { text } from './text';
 import type { BenchProbe, SetupSheet } from './types';
-import { boardPinOf, wiresOn, type BoardPins, type PlainWire } from './wiring';
+import { boardPinOf, partEnds, wiresOn, type BoardPins, type PlainWire } from './wiring';
 
 type Probe = ReturnType<typeof probeMarks>[number];
 type Mark = Probe & { x: number; y: number; row: number; labelled: boolean };
@@ -184,6 +184,7 @@ function place(v: HTMLElement, s: HTMLElement, boardId: string, board: Props['bo
   const o = v.getBoundingClientRect();
   const mx = { a: ctm.a, b: ctm.b, c: ctm.c, d: ctm.d, e: ctm.e - o.left, f: ctm.f - o.top };
   const out: Overlay = { ...NONE, marks: [], labels: [], wires: [] };
+  const boardIds = useSimulatorStore.getState().boards.map((b) => b.id);
   out.matrix = `matrix(${[mx.a, mx.b, mx.c, mx.d, mx.e, mx.f].map((n) => +n.toFixed(3)).join(' ')})`;
   const marks = probeMarks(probes).flatMap((p) => {
     const name = info.find((i) => board.number(i.name) === p.pin)?.name;
@@ -193,7 +194,8 @@ function place(v: HTMLElement, s: HTMLElement, boardId: string, board: Props['bo
     const on = wiresOn(p.pin, wires, boardId, board.number);
     on.forEach(({ wire }) => out.wires.push({ key: `${p.pin}-${wire.id}`, color: p.color, d: generateOrthogonalPath(wire.start, wire.waypoints ?? [], wire.end) }));
     // The label where the wire ends on a part; the farthest end when the pin has several.
-    const far = on.map(({ far }) => toView(mx, far.x, far.y)).sort((a, b) => b.x - a.x)[0];
+    // A wire to another board (a controller) has no part to name: the label stays by its pin.
+    const far = partEnds(on, boardIds).map(({ far }) => toView(mx, far.x, far.y)).sort((a, b) => b.x - a.x)[0];
     if (far) out.labels.push({ ...p, ...far });
     return [{ ...p, labelled: !!far, ...toView(mx, pin.x, pin.y) }];
   });
