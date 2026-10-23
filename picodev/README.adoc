@@ -333,15 +333,20 @@ a channel taken over by another tab stays offline. When the hub lists benches fo
 the setup (`GET <url>/benches`, optional), the bench offers to join their queue
 (one button per kind), then shows the place, the estimated wait and the turn with
 its time left, and lets the visitor give it back; the spectator page shows the
-turn. A turn with `video` (optional, a WHEP path on the same origin) shows the
+turn. With `?kind=real` in the address (`/bench/<setup>?kind=real`, also on
+`/challenge` and next to `s=`), the bench joins the `real` queue by itself, once per
+page load, as soon as the list offers it `open`, as the button does; the parameter
+then leaves the address bar, so a reload does not join again. Any other value is
+ignored. A turn with `video` (optional, a WHEP path on the same origin) shows the
 bench filmed live in place of the scene, to the owner and the spectators, with
 the browser's WebRTC and the session token. During a turn on a bench that is not `sim`, the
 browser simulates nothing: Lancer compiles and the program goes to the bench's
 board through the hub, the schema goes back to the sheet's circuit (the bench's
 wiring) and cannot be edited, an agent's `circuit` is refused, the speed is
-disabled, the traces say they are not the bench's analyser, and without `video`
+disabled, the simulation's traces are hidden (only the bench's capture shows), and without `video`
 the scene gives way to a note saying what goes on; at the end of the turn the
-visitor's own circuit (Libre) comes back. The visitor's logic capture downloads
+visitor's own circuit (Libre) comes back. The visitor's logic capture (the simulation's, or the
+bench's during a real turn) zooms (wheel, buttons, + and -) and pans (drag, arrows), and downloads
 as a VCD file (PulseView, GTKWave). On `capture_start` (optional too), the bench records every edge of the
 asked probe pins over a stretch of simulated time and sends the record in
 chunks; it records, it never measures nor decodes. `state` carries the

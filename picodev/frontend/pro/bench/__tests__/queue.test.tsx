@@ -7,7 +7,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ViewSwitch } from '../Camera';
-import { QueuePanel, TurnBadge } from '../HubControls';
+import { QueuePanel, TurnBadge, useKindLink } from '../HubControls';
 import { queueView, type BenchOffer, type QueueAction, type QueueView } from '../hub';
 import { setLang } from '../lang';
 
@@ -182,5 +182,49 @@ describe('camera during a turn', () => {
     expect(choices(true, true)).toEqual(['Caméra*', 'Schéma']);
     expect(choices(false, true)).toEqual(['Caméra*', 'Schéma']);
     expect(choices(false, false)).toEqual(['Schéma*']);
+  });
+});
+
+describe('?kind=real link (v0.22)', () => {
+  const join = vi.fn();
+  function Link({ offers, ready }: { offers: BenchOffer[]; ready: boolean }) {
+    useKindLink(offers, ready, join);
+    return null;
+  }
+  const at = (url: string) => history.replaceState(null, '', url);
+  const show = (offers: BenchOffer[], ready = true) => act(() => root.render(<Link offers={offers} ready={ready} />));
+  beforeEach(() => join.mockClear());
+
+  it('joins the real queue once it is offered open, and leaves the address bar', () => {
+    at('/bench/setup-a?s=abc123&kind=real#o=tok&d=x');
+    show([]);
+    show([soon]);
+    show([real], false); // hub not live yet, or a place already held
+    expect(join).not.toHaveBeenCalled();
+    show([sim, real]);
+    expect(join).toHaveBeenCalledExactlyOnceWith('real');
+    expect(location.pathname + location.search + location.hash).toBe('/bench/setup-a?s=abc123#o=tok&d=x');
+    // Given back: the offer comes again, no second join in this page load.
+    show([real], false);
+    show([{ ...real, free: 1 }]);
+    expect(join).toHaveBeenCalledOnce();
+  });
+
+  it('keeps the challenge path and drops the lone parameter', () => {
+    at('/bench/setup-a/challenge?kind=real');
+    show([real]);
+    expect(join).toHaveBeenCalledWith('real');
+    expect(location.pathname + location.search).toBe('/bench/setup-a/challenge');
+  });
+
+  it('ignores any other value, and no parameter', () => {
+    for (const url of ['/bench/setup-a?kind=sim', '/bench/setup-a?kind=REAL', '/bench/setup-a']) {
+      act(() => root.unmount());
+      root = createRoot(box);
+      at(url);
+      show([real, sim]);
+      expect(location.pathname + location.search).toBe(url);
+    }
+    expect(join).not.toHaveBeenCalled();
   });
 });

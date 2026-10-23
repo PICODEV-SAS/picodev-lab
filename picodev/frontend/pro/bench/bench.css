@@ -260,7 +260,6 @@ body:has(.bench) .picodev-attribution { display: none; }
 .bench-trace-legend li::before { content: ''; width: 10px; height: 10px; border: 2.5px solid var(--c); border-radius: 999px; }
 
 .bench-traces { flex: none; display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
-.bench-traces-note { grid-column: 1 / -1; margin: 0; padding: 8px 12px; border-radius: 8px; background: var(--b-surface); border: 1px dashed var(--b-border); color: var(--b-grey); font-size: 13px; }
 .bench-trace { display: flex; flex-direction: column; gap: 8px; padding: 10px; border: 1px solid var(--b-border); border-radius: 12px; background: var(--b-surface); }
 .bench-trace svg { display: block; width: 100%; height: 96px; border-radius: 6px; font-family: var(--b-mono); }
 .bench-trace-scope { background: var(--b-code); }
@@ -278,6 +277,11 @@ body:has(.bench) .picodev-attribution { display: none; }
 .bench-capture-bar .bench-btn { height: 34px; padding: 0 14px; font-size: 13px; }
 .bench-capture-bar [role='status'] { color: var(--b-text); font-size: 12px; }
 .bench-capture-table { overflow-x: auto; }
+.bench-capture-zoom { cursor: grab; touch-action: none; }
+.bench-capture-zoom:active { cursor: grabbing; }
+.bench-capture-zoombar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.bench-capture-zoombar .bench-btn { height: 28px; min-width: 28px; padding: 0 8px; font-size: 13px; }
+.bench-capture-zoombar span { color: var(--b-grey); font-size: 11px; }
 .bench-capture table { width: 100%; border-collapse: collapse; font-size: 12px; }
 .bench-capture th, .bench-capture td { padding: 4px 8px; border-bottom: 1px solid var(--b-border); text-align: right; white-space: nowrap; }
 .bench-capture thead th { color: var(--b-navy); font: 500 12px var(--b-mono); }

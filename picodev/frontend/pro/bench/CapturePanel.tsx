@@ -28,18 +28,21 @@ type State =
 const PRESETS_MS = [100, 500, 1000, 2000, 5000, CAPTURE_MAX_MS];
 const W = 300;
 const X0 = 30;
+/** The narrowest view, in µs: a few samples of the bench's analyser at 1 MHz. */
+const MIN_SPAN_US = 10;
 
-/** The recorded window of one pin; edges closer than half a pixel make a band. */
-function capturePath(edges: CaptureEdge[], pin: number, initial: 0 | 1, end: number, hi: number, lo: number): string {
+/** One pin between `from` and `to` (µs) of the recording; edges closer than half a pixel make a band. */
+function capturePath(edges: CaptureEdge[], pin: number, initial: 0 | 1, from: number, to: number, hi: number, lo: number): string {
   const y = (v: number) => (v ? hi : lo);
-  let d = `M${X0} ${y(initial)}`;
+  let level: number = initial;
+  for (const [t, p, v] of edges) if (p === pin && t <= from) level = v; // the level where the view starts
+  let d = `M${X0} ${y(level)}`;
   let col = -1;
   let inCol = 0;
-  let level: number = initial;
-  let drawn: number = initial;
+  let drawn = level;
   for (const [t, p, v] of edges) {
-    if (p !== pin || t > end) continue;
-    const x = Math.round((X0 + (t / end) * (W - X0)) * 2) / 2;
+    if (p !== pin || t <= from || t > to) continue;
+    const x = Math.round((X0 + ((t - from) / (to - from)) * (W - X0)) * 2) / 2;
     if (x !== col) {
       if (level !== drawn) d += `V${y(level)}`;
       drawn = level;
@@ -53,6 +56,19 @@ function capturePath(edges: CaptureEdge[], pin: number, initial: 0 | 1, end: num
   }
   if (level !== drawn) d += `V${y(level)}`;
   return `${d}H${W}`;
+}
+
+/** The view [from, to] (µs) zoomed by `factor` (< 1: in) around `at` (0..1 across the traces), kept inside [0, end]. */
+export function zoomView([from, to]: [number, number], end: number, factor: number, at = 0.5): [number, number] {
+  const span = Math.min(end, Math.max(MIN_SPAN_US, (to - from) * factor));
+  const start = Math.min(end - span, Math.max(0, from + (to - from) * at - span * at));
+  return [start, start + span];
+}
+
+/** The view moved by `by` µs, kept inside [0, end]. */
+export function panView([from, to]: [number, number], end: number, by: number): [number, number] {
+  const start = Math.min(end - (to - from), Math.max(0, from + by));
+  return [start, start + (to - from)];
 }
 
 /** A real turn: the bench's last capture, and how to ask for one (false: the hub is out of reach). */
@@ -134,6 +150,39 @@ export function CapturePanel({ recorder, probes, running, bench }: { recorder: R
                     ? t.captureAgent
                     : '';
   const done = state.phase === 'done' ? state : null;
+  // The part of the capture on screen (µs): all of it until zoomed; a new capture shows all of it again.
+  const [zoom, setZoom] = useState<[number, number] | null>(null);
+  const [zoomOf, setZoomOf] = useState(done);
+  if (zoomOf !== done) {
+    setZoomOf(done);
+    setZoom(null);
+  }
+  const win: [number, number] = done && zoom ? zoom : [0, done?.end || 1];
+  const winNow = useRef(win);
+  winNow.current = win;
+  const svg = useRef<SVGSVGElement>(null);
+  const drag = useRef<{ x: number; win: [number, number] } | null>(null);
+  /** From a pointer's x to 0..1 across the traces (the labels' margin excluded). */
+  const across = (clientX: number) => {
+    const r = svg.current!.getBoundingClientRect();
+    return Math.min(1, Math.max(0, (((clientX - r.left) / r.width) * W - X0) / (W - X0)));
+  };
+  // The wheel zooms around the pointer (a sideways swipe pans): a passive React listener could not keep the page still.
+  useEffect(() => {
+    const el = svg.current;
+    if (!el || !done) return;
+    const wheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const [from, to] = winNow.current;
+      if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) setZoom(panView(winNow.current, done.end, (e.deltaX / el.getBoundingClientRect().width) * (to - from)));
+      else setZoom(zoomView(winNow.current, done.end, e.deltaY < 0 ? 0.8 : 1.25, across(e.clientX)));
+    };
+    el.addEventListener('wheel', wheel, { passive: false });
+    return () => el.removeEventListener('wheel', wheel);
+  }, [done]);
+  const zoomBy = (factor: number) => done && setZoom(zoomView(win, done.end, factor));
+  const panBy = (share: number) => done && setZoom(panView(win, done.end, share * (win[1] - win[0])));
+  const zoomed = !!done && (win[0] > 0 || win[1] < done.end);
   const rows: Array<[string, (c: Channel) => string | number]> = [
     [t.captureRows.edges, (c) => c.edges],
     [t.captureRows.period, (c) => dur(c.period_ms)],
@@ -202,20 +251,61 @@ export function CapturePanel({ recorder, probes, running, bench }: { recorder: R
             </table>
           </div>
           <figure className="bench-trace">
-            <svg className="bench-trace-logic" viewBox={`0 0 ${W} 120`} preserveAspectRatio="none" role="img" aria-label={caption(num(done.end / 1e6))}>
+            <svg
+              ref={svg}
+              className="bench-trace-logic bench-capture-zoom"
+              viewBox={`0 0 ${W} 120`}
+              preserveAspectRatio="none"
+              role="img"
+              aria-label={`${caption(num(done.end / 1e6))} · ${t.captureZoomHint}`}
+              tabIndex={0}
+              onPointerDown={(e) => {
+                e.currentTarget.setPointerCapture(e.pointerId);
+                drag.current = { x: e.clientX, win };
+              }}
+              onPointerMove={(e) => {
+                const d = drag.current;
+                if (!d) return;
+                const width = e.currentTarget.getBoundingClientRect().width * ((W - X0) / W);
+                setZoom(panView(d.win, done.end, (-(e.clientX - d.x) / width) * (d.win[1] - d.win[0])));
+              }}
+              onPointerUp={() => (drag.current = null)}
+              onPointerCancel={() => (drag.current = null)}
+              onDoubleClick={() => setZoom(null)}
+              onKeyDown={(e) => {
+                const act: Record<string, () => void> = { ArrowLeft: () => panBy(-0.25), ArrowRight: () => panBy(0.25), '+': () => zoomBy(0.5), '=': () => zoomBy(0.5), '-': () => zoomBy(2), '0': () => setZoom(null), Home: () => setZoom(null) };
+                if (!act[e.key]) return;
+                e.preventDefault();
+                act[e.key]();
+              }}
+            >
+              <title>{t.captureZoomHint}</title>
               {done.channels.map((c, i) => (
                 <g key={c.pin}>
                   <text x="6" y={band * (i + 0.5) + 4} fontSize="11" fill="#4A5B70">
                     {c.label}
                   </text>
-                  <path d={capturePath(done.rec.edges, c.pin, c.initial, done.end, band * (i + 0.28), band * (i + 0.8))} fill="none" stroke={probeColor('logic', Math.max(0, probes.findIndex((p) => p.pin === c.pin)))} strokeWidth="2" vectorEffect="non-scaling-stroke" />
+                  <path d={capturePath(done.rec.edges, c.pin, c.initial, win[0], win[1], band * (i + 0.28), band * (i + 0.8))} fill="none" stroke={probeColor('logic', Math.max(0, probes.findIndex((p) => p.pin === c.pin)))} strokeWidth="2" vectorEffect="non-scaling-stroke" />
                 </g>
               ))}
             </svg>
             <figcaption>
               <strong>{caption(num(done.end / 1e6))}</strong>
-              <span>{done.truncated ? t.captureTruncated : t.captureWindow(num(done.rec.t0Ms / 1000), num((done.rec.t0Ms + done.end / 1000) / 1000))}</span>
+              {/* Session time of what is on screen: down to the µs once zoomed under 10 ms. */}
+              <span>{done.truncated && !zoomed ? t.captureTruncated : t.captureWindow(num((done.rec.t0Ms + win[0] / 1000) / 1000, win[1] - win[0] < 10_000 ? 6 : 3), num((done.rec.t0Ms + win[1] / 1000) / 1000, win[1] - win[0] < 10_000 ? 6 : 3))}</span>
             </figcaption>
+            <div className="bench-capture-zoombar">
+              <button type="button" className="bench-btn" onClick={() => zoomBy(0.5)} disabled={win[1] - win[0] <= MIN_SPAN_US} aria-label={t.captureZoomIn}>
+                +
+              </button>
+              <button type="button" className="bench-btn" onClick={() => zoomBy(2)} disabled={!zoomed} aria-label={t.captureZoomOut}>
+                −
+              </button>
+              <button type="button" className="bench-btn" onClick={() => setZoom(null)} disabled={!zoomed}>
+                {t.captureZoomFit}
+              </button>
+              <span>{t.captureZoomHint}</span>
+            </div>
           </figure>
         </>
       )}

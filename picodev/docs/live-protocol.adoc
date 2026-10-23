@@ -419,8 +419,8 @@ the capture failed, in the visitor's language; the `detail` is not shown. On
 an `error` whose `ref` is `capture_request` the panel leaves « Capture
 demandée » and says, in the visitor's language, that a capture is already
 recording (`busy`), that it is not the visitor's turn (`refused`), or that the
-hub refused it (any other code); the `detail` is not shown. The traces under the panel keep
-their note: they are the simulation's, stopped during the turn.
+hub refused it (any other code); the `detail` is not shown. The simulation's traces
+are hidden during the turn: only the bench's capture shows.
 
 == Optional extension: error replies
 

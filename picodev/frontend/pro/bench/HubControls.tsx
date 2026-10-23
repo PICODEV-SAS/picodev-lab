@@ -149,6 +149,26 @@ function useNow() {
  * The bench's offer to go on a bench of the hub, then the place in its queue,
  * then the turn. Nothing at all when the setup has no bench and no place is held.
  */
+/**
+ * `?kind=real` in the address (v0.22): joins the `real` queue once per page load,
+ * as soon as the benches list offers it `open` and the visitor holds no place
+ * (`ready`), through the same `join` as the button. Any other value, or no open
+ * real bench, and nothing happens. The parameter leaves the address bar when it
+ * is used (`s=` and the rest stay), so a reload does not join again.
+ */
+export function useKindLink(offers: BenchOffer[], ready: boolean, join: (kind: string) => void) {
+  const wanted = useRef(new URLSearchParams(location.search).get('kind') === 'real');
+  useEffect(() => {
+    if (!wanted.current || !ready || !offers.some((o) => o.kind === 'real' && o.status === 'open')) return;
+    wanted.current = false;
+    const params = new URLSearchParams(location.search);
+    params.delete('kind');
+    const query = params.toString();
+    history.replaceState(history.state, '', location.pathname + (query ? `?${query}` : '') + location.hash);
+    join('real');
+  });
+}
+
 export function QueuePanel({ offers, view, disabled, onJoin, onLeave, onSeen }: { offers: BenchOffer[]; view: QueueView; disabled: boolean; onJoin(kind: string): void; onLeave(): void; onSeen(): void }) {
   const now = useNow();
   const t = text();

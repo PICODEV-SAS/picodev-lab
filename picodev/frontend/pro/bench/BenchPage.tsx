@@ -33,7 +33,7 @@ import { EXIT_URL, HOME_URL, HUB_URL } from './config';
 import { applyCouplings, mountScene, runLevel } from './engine';
 import { Banner, Brand, Footer, LangSwitch, Message, SimClock } from './frame';
 import { fetchBenches, fetchStatus, hubPaused, queueView, SPEEDS, startOwner, withShare, type BenchCapture, type BenchOffer, type HubStatus, type OwnerLink, type SessionInfo } from './hub';
-import { AgentJournal, QueuePanel, VisibilityMenu, type AgentCall } from './HubControls';
+import { AgentJournal, QueuePanel, useKindLink, VisibilityMenu, type AgentCall } from './HubControls';
 import { getLang, localizeSheet, localPath } from './lang';
 import { dropZone, Fold, Grip, moveTo, Splitter, step, useLayout, type Column, type Part, type Section } from './layout';
 import { LevelPanel, TestList, type AnswerState } from './LevelPanel';
@@ -593,6 +593,7 @@ function Workspace({ bench, mode }: { bench: Bench; mode: Mode }) {
 
   const offline = { type: 'note', text: t.hubOffline } as const;
   const joinQueue = (kind: string) => onQueue(hub.current?.joinQueue(kind) ? { type: 'note', text: '' } : offline);
+  useKindLink(offers, hubStatus === 'live' && queue.phase === 'none', joinQueue);
   const leaveQueue = () => onQueue(hub.current?.leaveQueue() ? { type: 'note', text: '' } : offline);
 
   /** `relaunch`: launch() starts the simulation again (new code, pushed or not). */
@@ -813,9 +814,9 @@ function Workspace({ bench, mode }: { bench: Bench; mode: Mode }) {
         {view === 'camera' && turnVideo && <Camera path={turnVideo.video} hls={turnVideo.hls} token={hubInfo!.owner!} />}
       </div>
     ),
-    traces: sheet.probes.length > 0 && (
+    // During a real turn only the bench's capture shows (v0.22): the simulation's traces are hidden.
+    traces: sheet.probes.length > 0 && !realTurn && (
       <div className="bench-traces">
-        {realTurn && <p className="bench-traces-note">{t.tracesNotReal}</p>}
         {(['scope', 'logic'] as const).map((kind) => probesOf(kind).length > 0 && <Traces key={kind} kind={kind} probes={probesOf(kind)} nowMs={probe.nowMs} live={running} />)}
       </div>
     ),
