@@ -19,7 +19,7 @@ import { useSimulatorStore } from '@velxio/store/useSimulatorStore';
 import { BOARD_KIND_FQBN, BOARD_KIND_LABELS, type BoardKind } from '@velxio/types/board';
 import { stripBrandPrefix } from '@velxio/utils/exampleToBuildNetlistInput';
 import { loadExample } from '@velxio/utils/loadExample';
-import { circuitOf } from '../bench/circuit';
+import { circuitOf, withWaypoints } from '../bench/circuit';
 import { SETUPS_URL } from '../bench/config';
 import { getLang, setLang } from '../bench/lang';
 import { Bindings } from './Bindings';
@@ -93,10 +93,10 @@ function fromEditor(types: Map<string, string>) {
 }
 
 /** The draft as one of Velxio's examples: what the editor loads. */
-function loadIntoEditor(d: StudioDraft) {
+async function loadIntoEditor(d: StudioDraft) {
   const parsed = parseRest(d.rest);
   const libraries = 'value' in parsed && Array.isArray(parsed.value.libraries) ? parsed.value.libraries.filter((l): l is string => typeof l === 'string') : [];
-  return loadExample({
+  await loadExample({
     id: d.id,
     title: d.title,
     description: '',
@@ -110,6 +110,8 @@ function loadIntoEditor(d: StudioDraft) {
     // The sheet pins versions ("Servo@1.2.2"); Velxio's manifest wants names.
     libraries: libraries.map((l) => l.split('@')[0]),
   });
+  const sim = useSimulatorStore.getState();
+  sim.setWires(withWaypoints(sim.wires, d.circuit.wires));
 }
 
 async function readSheet(id: string): Promise<StudioDraft> {

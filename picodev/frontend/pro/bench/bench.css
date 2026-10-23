@@ -293,6 +293,7 @@ body:has(.bench) .picodev-attribution { display: none; }
 .bench-serial > div { flex: none; display: flex; align-items: center; justify-content: space-between; height: 34px; padding: 0 14px; border-bottom: 1px solid var(--b-code-line); color: var(--b-code-dim); font: 400 12px var(--b-mono); }
 .bench-serial strong { color: #FFFFFF; font: 600 13px var(--b-sans); }
 .bench-serial pre { flex: 1; min-height: 0; padding: 8px 14px; overflow: auto; color: var(--b-code-text); font-size: 13px; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }
+.bench-serial-note { display: block; color: var(--b-code-dim); font-family: var(--b-sans); font-style: italic; }
 
 /* ── Arranged by the visitor (layout.tsx): grips, separators, sizes ─────── */
 /* A section is a wrapper around the part it holds: the wrapper takes the

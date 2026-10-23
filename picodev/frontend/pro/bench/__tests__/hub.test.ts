@@ -263,6 +263,34 @@ describe('bench hub client, owner', () => {
     expect(h.benchSerial.mock.calls).toEqual([['Bonjour <b>x</b>\n']]);
   });
 
+  it('hands flash to the page, only its three states, a detail of 1 to 500 characters (v0.24)', async () => {
+    const { startOwner } = await import('../hub');
+    const h = { ...hooks(), benchFlash: vi.fn() };
+    startOwner(sheet, 'free', fakeProbe().probe, h);
+    await vi.runOnlyPendingTimersAsync();
+    const ws = FakeSocket.all[0];
+    ws.accept();
+
+    ws.deliver({ type: 'flash', state: 'start' });
+    ws.deliver({ type: 'flash', state: 'ok', detail: 'fine' });
+    ws.deliver({ type: 'flash', state: 'failed', detail: 'avrdude: <b>no</b>' });
+    ws.deliver({ type: 'flash', state: 'failed', detail: 'x'.repeat(500) });
+    ws.deliver({ type: 'flash', state: 'failed', detail: 'x'.repeat(501) });
+    ws.deliver({ type: 'flash', state: 'failed', detail: 42 });
+    ws.deliver({ type: 'flash', state: 'failed', detail: '' });
+    ws.deliver({ type: 'flash', state: 'done' });
+    ws.deliver({ type: 'flash' });
+    expect(h.benchFlash.mock.calls).toEqual([
+      ['start', undefined],
+      ['ok', 'fine'],
+      ['failed', 'avrdude: <b>no</b>'],
+      ['failed', 'x'.repeat(500)],
+      ['failed', undefined],
+      ['failed', undefined],
+      ['failed', undefined],
+    ]);
+  });
+
   it('reconnects with a growing delay', async () => {
     const { startOwner } = await import('../hub');
     const h = hooks();

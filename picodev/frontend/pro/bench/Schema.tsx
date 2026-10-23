@@ -221,7 +221,7 @@ export function SpectatorSchema({ kind, circuit, ...props }: Omit<Props, 'boardI
         .filter((c) => !isBoardComponentType(c.type))
         .map((c) => ({ id: c.id, metadataId: stripBrandPrefix(c.type), x: c.x ?? 0, y: c.y ?? 0, properties: c.properties })),
     );
-    sim.setWires(circuit.wires.map((w) => ({ id: w.id, start: end(w.start), end: end(w.end), color: w.color, waypoints: [] })));
+    sim.setWires(circuit.wires.map((w) => ({ id: w.id, start: end(w.start), end: end(w.end), color: w.color, waypoints: w.waypoints ?? [] })));
     sim.recalculateAllWirePositions();
   }, [kind, key]); // eslint-disable-line react-hooks/exhaustive-deps
   // Velxio's numbering of the board, as the bench page's (BenchPage boardPins).

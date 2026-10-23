@@ -442,6 +442,27 @@ simulation's output when the turn ends. Spectators replay these `events` as
 they replay the owner's, and empty the panel when the turn starts. The text
 is not filtered: it is shown as plain text, never as HTML.
 
+=== Bench loads in the editor (v0.24)
+
+During a turn on a bench, the hub tells the owner how the bench's load of the
+program goes. Never sent to spectators.
+
+[cols="1,1,4", options="header"]
+|===
+|Direction |`type` |Fields
+
+|hub -> owner |`flash` |`{state, detail?}`, `state` one of `start` (the hub passed a program to the bench), `ok` (the bench answered healthy after it), `failed` (it answered broken). `detail`, with `failed`: the end of the bench's log, 500 characters at most.
+|===
+
+The editor shows each one as a line of its own in the serial panel, styled
+apart from the board's output and never mixed into it: "Loading onto the
+bench's board…", then "Program loaded (n s): the board restarts, its output
+follows." (n the seconds since the `start`, one decimal) or "Load failed:" and
+the detail, as plain text. Any other `state` is ignored, and a `detail` that is
+not a string of 1 to 500 characters is dropped. A `start` without an answer
+stays on screen when the panel is emptied (its turn may begin after it), and
+is closed when the turn ends.
+
 == Optional extension: error replies
 
 A hub may answer a message it refuses on the owner's live channel (and on its

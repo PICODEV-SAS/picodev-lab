@@ -1,6 +1,6 @@
 /** The circuit in the sheet's shape, and the checks of an agent's circuit (v0.8). */
 import { describe, expect, it } from 'vitest';
-import { checkCircuit, circuitFits, circuitOf, pinKnown, placeFree, readCircuit, type Catalogue, type PushedCircuit } from '../circuit';
+import { checkCircuit, circuitFits, circuitOf, pinKnown, placeFree, readCircuit, waypointsOf, withWaypoints, type Catalogue, type PushedCircuit } from '../circuit';
 
 const catalogue: Catalogue = {
   kind: (type) => (type === 'wokwi-led' || type === 'wokwi-resistor' || type === 'wokwi-mystery' ? 'part' : type === 'wokwi-arduino-uno' ? 'board' : null),
@@ -100,5 +100,50 @@ describe('circuit (v0.8)', () => {
         if (a !== b) expect(a.x + a.w <= b.x || b.x + b.w <= a.x || a.y + a.h <= b.y || b.y + b.h <= a.y, `${a.id} covers ${b.id}`).toBe(true);
     expect(boxes.filter((p) => p.id !== 'fixed').every((p) => p.x >= 400 + 500 + 40)).toBe(true); // right of the placed part, by its size
     expect(boxes.find((p) => p.id === 'big')!.x).toBe(940); // too wide for any row: alone on its own
+  });
+});
+
+describe('waypoints (0.24)', () => {
+  const pts = [
+    { x: 10, y: 20 },
+    { x: 30.5, y: -4 },
+  ];
+  const bad = [[], Array(17).fill({ x: 1, y: 1 }), [{ x: 1 }], [{ x: 1, y: Infinity }], [{ x: '1', y: 2 }], 'x', { x: 1, y: 2 }];
+
+  it('takes 16 finite points at most, else none', () => {
+    expect(waypointsOf([{ x: 10, y: 20, extra: 1 }, pts[1]])).toEqual(pts);
+    expect(waypointsOf(Array(16).fill({ x: 1, y: 1 }))).toHaveLength(16);
+    for (const b of bad) expect(waypointsOf(b), JSON.stringify(b)).toBeUndefined();
+  });
+
+  it('keeps them through a pushed circuit; drops invalid ones from that wire only', () => {
+    const c = readCircuit({ components: [], wires: [{ ...wire('w1', ['a', 'A'], ['b', '1']), waypoints: pts }, ...bad.map((b, i) => ({ ...wire(`x${i}`, ['a', 'A'], ['b', '1']), waypoints: b }))] });
+    expect(c).not.toBeTypeOf('string');
+    const wires = (c as PushedCircuit).wires;
+    expect(wires[0]).toEqual({ ...wire('w1', ['a', 'A'], ['b', '1']), waypoints: pts });
+    expect(wires.slice(1).every((w) => !('waypoints' in w))).toBe(true);
+  });
+
+  it("reads the store's waypoints back (the studio's export), none when empty", () => {
+    const c = circuitOf(
+      [],
+      [
+        { id: 'w1', start: { componentId: 'b', pinName: '6' }, end: { componentId: 'l', pinName: 'A' }, color: '#f00', waypoints: pts },
+        { id: 'w2', start: { componentId: 'b', pinName: '7' }, end: { componentId: 'l', pinName: 'C' }, color: '#f00', waypoints: [] },
+      ],
+      (id) => id,
+    );
+    expect(c.wires[0].waypoints).toEqual(pts);
+    expect(c.wires[1]).not.toHaveProperty('waypoints');
+  });
+
+  it("puts the sheet's waypoints back on the wires loadExample made, by id", () => {
+    const store = [
+      { id: 'w1', waypoints: [], color: '#000' },
+      { id: 'w2', waypoints: [], color: '#000' },
+      { id: 'bb1', waypoints: [], color: '#000' },
+    ];
+    const out = withWaypoints(store, [{ id: 'w1', waypoints: pts }, { id: 'w2', waypoints: Array(17).fill({ x: 1, y: 1 }) }, null, 'junk']);
+    expect(out).toEqual([{ id: 'w1', waypoints: pts, color: '#000' }, store[1], store[2]]);
   });
 });

@@ -12,6 +12,7 @@ import { ANALOG_MAX, createSampler, type AnalogSim, type Sampler } from './analo
 import { CAPTURE_MAX_MS, createRecorder, type Interruption, type Recorder, type Recording } from './capture';
 import { circuitFits, readCircuit, type Circuit, type PushedCircuit } from './circuit';
 import { HUB_URL } from './config';
+import type { FlashState } from './serial';
 import { text } from './text';
 import type { BenchEvent, BenchProbe, Lang, SetupSheet, TestResult } from './types';
 import type { BoardPins } from './wiring';
@@ -80,6 +81,8 @@ const MAX_COMPILE = 60 * 1024; // a `compile` with its program, kept clear of MA
 const LOG_CUT = '[…]\n';
 const BACKOFF_MAX_MS = 30_000;
 const MAX_NOTICE = 500;
+/** `flash` detail (v0.24): the end of the bench's log; a longer one is dropped. */
+const MAX_FLASH_DETAIL = 500;
 const MAX_BANNER = 200;
 
 export const isSessionId = (s: unknown): s is string => typeof s === 'string' && SESSION_RE.test(s);
@@ -842,6 +845,8 @@ export interface OwnerHooks {
   benchCapture?(capture: BenchCapture): void;
   /** The serial output of the bench's board during a turn (v0.23), plain text, never HTML. */
   benchSerial?(text: string): void;
+  /** `flash` (v0.24): the bench's load of the program during a turn; `detail` (failed) the end of its log, plain text. */
+  benchFlash?(state: FlashState, detail?: string): void;
 }
 
 export interface OwnerLink {
@@ -993,6 +998,10 @@ export function startOwner(sheet: SetupSheet, mode: string, probe: BenchProbe, h
             if (text) hooks.benchSerial?.(text);
             break;
           }
+          case 'flash':
+            if (msg.state === 'start' || msg.state === 'ok' || msg.state === 'failed')
+              hooks.benchFlash?.(msg.state, typeof msg.detail === 'string' && msg.detail && msg.detail.length <= MAX_FLASH_DETAIL ? msg.detail : undefined);
+            break;
           case 'error':
             if (msg.ref === 'capture_request') {
               asked = undefined; // refused: the next capture is not the visitor's

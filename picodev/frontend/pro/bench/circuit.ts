@@ -17,11 +17,17 @@ export interface CircuitComponent {
   y: number;
   properties: Record<string, Plain>;
 }
+export interface Point {
+  x: number;
+  y: number;
+}
 export interface CircuitWire {
   id: string;
   start: CircuitEnd;
   end: CircuitEnd;
   color: string;
+  /** Where the wire passes, in order (architecture 0.24); none: Velxio's automatic route. */
+  waypoints?: Point[];
 }
 export interface Circuit {
   components: CircuitComponent[];
@@ -33,7 +39,7 @@ export interface PushedCircuit {
   wires: CircuitWire[];
 }
 
-export const CIRCUIT_MAX = { components: 40, wires: 120, bytes: 48 * 1024 };
+export const CIRCUIT_MAX = { components: 40, wires: 120, bytes: 48 * 1024, waypoints: 16 };
 const ID_RE = /^[A-Za-z0-9_.-]{1,64}$/;
 const DEFAULT_COLOR = '#22c55e';
 
@@ -50,6 +56,7 @@ interface StoreWire {
   start: CircuitEnd;
   end: CircuitEnd;
   color: string;
+  waypoints?: Point[];
   bb?: boolean;
 }
 
@@ -82,6 +89,7 @@ export function circuitOf(components: StoreComponent[], wires: StoreWire[], type
         start: { componentId: w.start.componentId, pinName: w.start.pinName },
         end: { componentId: w.end.componentId, pinName: w.end.pinName },
         color: w.color,
+        ...withPoints(w.waypoints),
       })),
   };
 }
@@ -91,6 +99,31 @@ export const circuitFits = (c: Circuit) =>
   c.components.length <= CIRCUIT_MAX.components && c.wires.length <= CIRCUIT_MAX.wires && new TextEncoder().encode(JSON.stringify(c)).length <= CIRCUIT_MAX.bytes;
 
 const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
+const isPoint = (v: unknown): v is Point => isObj(v) && Number.isFinite(v.x) && Number.isFinite(v.y);
+
+/** A wire's `waypoints` as the sheet takes them (16 at most, finite x and y), or undefined: none, or not valid. */
+export function waypointsOf(v: unknown): Point[] | undefined {
+  if (!Array.isArray(v) || !v.length || v.length > CIRCUIT_MAX.waypoints || !v.every(isPoint)) return undefined;
+  return v.map(({ x, y }) => ({ x, y }));
+}
+/** `{waypoints}` when `v` holds valid ones, else nothing: spread into a wire. */
+const withPoints = (v: unknown) => {
+  const waypoints = waypointsOf(v);
+  return waypoints ? { waypoints } : {};
+};
+
+/**
+ * Velxio's loadExample gives every wire no waypoints: `wires` (the store's,
+ * after it) with those of `from` (the sheet's wires, unchecked), by wire id.
+ */
+export function withWaypoints<W extends { id: string; waypoints: Point[] }>(wires: W[], from: unknown[]): W[] {
+  const points = new Map(from.flatMap((w) => (isObj(w) && typeof w.id === 'string' ? [[w.id, waypointsOf(w.waypoints)] as const] : [])));
+  return wires.map((w) => {
+    const waypoints = points.get(w.id);
+    return waypoints ? { ...w, waypoints } : w;
+  });
+}
+
 const isEnd = (v: unknown): v is CircuitEnd => isObj(v) && typeof v.componentId === 'string' && typeof v.pinName === 'string' && v.pinName.length <= 64;
 
 /** A `circuit` message, checked for shape (it comes from a stranger); a string says why it is refused. */
@@ -116,7 +149,7 @@ export function readCircuit(msg: Record<string, unknown>): PushedCircuit | strin
     if (wireIds.has(w.id)) return `Duplicate wire id "${w.id}".`;
     wireIds.add(w.id);
     const color = typeof w.color === 'string' && w.color.length <= 32 ? w.color : DEFAULT_COLOR;
-    out.wires.push({ id: w.id, start: { componentId: w.start.componentId, pinName: w.start.pinName }, end: { componentId: w.end.componentId, pinName: w.end.pinName }, color });
+    out.wires.push({ id: w.id, start: { componentId: w.start.componentId, pinName: w.start.pinName }, end: { componentId: w.end.componentId, pinName: w.end.pinName }, color, ...withPoints(w.waypoints) });
   }
   return out;
 }

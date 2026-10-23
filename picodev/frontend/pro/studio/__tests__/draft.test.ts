@@ -20,6 +20,7 @@ import {
   withScene,
   type FolderFile,
 } from '../draft';
+import { circuitOf } from '../../bench/circuit';
 
 /** A served sheet, as /setups/<id>/setup.json gives it: files and i18n.en.files built from the folder. */
 const served = {
@@ -150,5 +151,19 @@ describe('studio draft', () => {
   it('names the board as the sheet does', () => {
     expect(sheetFqbn('arduino:avr:nano:cpu=atmega328')).toBe('arduino:avr:nano');
     expect(sheetFqbn('arduino:avr:uno')).toBe('arduino:avr:uno');
+  });
+
+  it("exports the waypoints the author drew in the editor (0.24)", () => {
+    const pts = [
+      { x: 10, y: 20 },
+      { x: 10, y: 80 },
+    ];
+    // What fromEditor gives: the store's wires in the sheet's shape.
+    const circuit = circuitOf([], [{ id: 'w1', start: { componentId: 'arduino-nano', pinName: '6' }, end: { componentId: 'led', pinName: 'A' }, color: '#f00', waypoints: pts }], (id) => id);
+    const out = byPath(folderFiles({ ...draftFromSheet(served, null), circuit }) as FolderFile[]);
+    expect(JSON.parse(out['setup-a/setup.json']).circuit.wires[0].waypoints).toEqual(pts);
+    // A served sheet's waypoints come back into the draft as they are.
+    const withPts = { ...served, circuit: { ...served.circuit, wires: [{ ...served.circuit.wires[0], waypoints: pts }] } };
+    expect(draftFromSheet(withPts, null).circuit.wires[0].waypoints).toEqual(pts);
   });
 });

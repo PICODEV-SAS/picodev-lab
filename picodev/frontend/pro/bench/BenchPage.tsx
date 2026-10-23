@@ -28,7 +28,7 @@ import type { AnalogSim } from './analog';
 import { createRecorder, type Recorder } from './capture';
 import { Camera, ViewSwitch, type View } from './Camera';
 import { CapturePanel } from './CapturePanel';
-import { checkCircuit, circuitOf, placeFree, type Catalogue, type PushedCircuit, type Size } from './circuit';
+import { checkCircuit, circuitOf, placeFree, withWaypoints, type Catalogue, type PushedCircuit, type Size } from './circuit';
 import { EXIT_URL, HOME_URL, HUB_URL } from './config';
 import { applyCouplings, mountScene, runLevel } from './engine';
 import { Banner, Brand, Footer, LangSwitch, Message, SimClock } from './frame';
@@ -42,6 +42,7 @@ import { setEditorReadOnly, themeMonaco } from './monaco';
 import { createProbe, type ProbedSim, type SimProbe } from './probe';
 import { Schema } from './Schema';
 import { fetchSetup, toExample, type LoadedSetup } from './sheet';
+import { emptySerial, serialView } from './serial';
 import { text } from './text';
 import { Traces } from './Traces';
 import type { TestResult } from './types';
@@ -50,8 +51,6 @@ import './bench.css';
 
 /** Read by the end page of the site: the last sketch the visitor worked on. */
 const LAST_SKETCH_KEY = 'picodev-lab:last-sketch';
-/** The bench's serial kept on screen during a real turn, in characters (the hub keeps 16 KiB). */
-const MAX_SERIAL = 16384;
 const sketchKey = (setupId: string) => `picodev-lab:sketch:${setupId}`;
 /** Whether the editor column is shown, for this tab only: a new session starts with it. */
 const codeShownKey = (setupId: string) => `picodev-lab:bench-code:${setupId}`;
@@ -179,6 +178,8 @@ function Loader({ setupId, mode }: { setupId: string; mode: Mode }) {
       const loaded = { ...fetched, sheet: localizeSheet(fetched.sheet, getLang()) };
       await loadExample(toExample(loaded.sheet));
       if (cancelled) return;
+      const loadedSim = useSimulatorStore.getState();
+      loadedSim.setWires(withWaypoints(loadedSim.wires, loaded.sheet.circuit.wires));
 
       const saved = readSaved(setupId);
       const editor = useEditorStore.getState();
@@ -346,8 +347,8 @@ function Workspace({ bench, mode }: { bench: Bench; mode: Mode }) {
   const offersPushed = useRef(false);
   /** The bench's last capture for the session (v0.20), relayed by the hub. */
   const [benchCapture, setBenchCapture] = useState<BenchCapture | null>(null);
-  /** The serial output of the bench's board during a real turn (v0.23), plain text. */
-  const [benchSerial, setBenchSerial] = useState('');
+  /** The serial output of the bench's board during a real turn (v0.23), and the editor's lines on its loads (v0.24). */
+  const [benchSerial, onBenchSerial] = useReducer(serialView, emptySerial);
   const [queue, onQueue] = useReducer(queueView, { phase: 'none' });
   const [notice, setNotice] = useState<string | null>(null);
   // No hub session while the hub takes none: no sharing, no queue, no agent.
@@ -375,7 +376,7 @@ function Workspace({ bench, mode }: { bench: Bench; mode: Mode }) {
       sim.setWires(wires);
       sim.recalculateAllWirePositions();
     };
-    if (realTurn) setBenchSerial('');
+    onBenchSerial({ type: realTurn ? 'reset' : 'clear' });
     if (!realTurn) {
       const kept = visitorCircuit.current;
       visitorCircuit.current = null;
@@ -519,7 +520,8 @@ function Workspace({ bench, mode }: { bench: Bench; mode: Mode }) {
         setOffers(o);
       },
       benchCapture: setBenchCapture,
-      benchSerial: (text) => setBenchSerial((s) => (s + text).slice(-MAX_SERIAL)),
+      benchSerial: (text) => onBenchSerial({ type: 'board', text }),
+      benchFlash: (state, detail) => onBenchSerial({ type: 'flash', state, detail, at: performance.now() }),
     }, bench.recorder);
     hub.current = link;
     const unsubscribe = useEditorStore.subscribe((s, prev) => {
@@ -562,7 +564,7 @@ function Workspace({ bench, mode }: { bench: Bench; mode: Mode }) {
         start: { ...w.start, x: 0, y: 0 },
         end: { ...w.end, x: 0, y: 0 },
         color: w.color,
-        waypoints: [],
+        waypoints: w.waypoints ?? [],
       })),
     );
     sim.recalculateAllWirePositions();
@@ -633,7 +635,7 @@ function Workspace({ bench, mode }: { bench: Bench; mode: Mode }) {
 
     if (now.current.realTurn) {
       // publishCompile sent it to the bench, which flashes it (one load per 10 s at most).
-      setBenchSerial('');
+      onBenchSerial({ type: 'reset' });
       say(text().logSentToBench);
       return;
     }
@@ -843,7 +845,16 @@ function Workspace({ bench, mode }: { bench: Bench; mode: Mode }) {
           <span>{compiling ? t.compilingShort : compileSecs === null ? '' : t.compiledIn(seconds1(compileSecs, t.locale))}</span>
         </div>
         <pre ref={serialBox} tabIndex={0} role="log" aria-label={t.serialAria}>
-          {realTurn ? benchSerial : serial}
+          {realTurn
+            ? benchSerial.entries.map((e, i) => (
+                // Plain text, never HTML; the editor's own lines styled apart from the board's output.
+                'board' in e ? <Fragment key={i}>{e.board}</Fragment> : (
+                  <span key={i} className="bench-serial-note">
+                    {e.flash === 'start' ? t.flashStart : e.flash === 'ok' ? t.flashOk(e.secs === undefined ? null : seconds1(e.secs, t.locale)) : t.flashFailed(e.detail)}
+                  </span>
+                )
+              ))
+            : serial}
         </pre>
       </div>
     ),
