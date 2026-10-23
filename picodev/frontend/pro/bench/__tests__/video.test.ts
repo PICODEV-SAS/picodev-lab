@@ -114,3 +114,100 @@ describe('WHEP player', () => {
     expect(states.at(-1)).toBe('unavailable');
   });
 });
+
+describe('LL-HLS fallback (v0.20)', () => {
+  class FakeHls {
+    static all: FakeHls[] = [];
+    static supported = true;
+    static isSupported = () => FakeHls.supported;
+    static Events = { ERROR: 'hlsError' as const };
+    config: { xhrSetup: (xhr: XMLHttpRequest, url: string) => void; enableWorker: boolean; lowLatencyMode: boolean };
+    source = '';
+    media: HTMLMediaElement | null = null;
+    destroyed = false;
+    onError: ((e: 'hlsError', data: { fatal: boolean }) => void) | null = null;
+    constructor(config: FakeHls['config']) {
+      this.config = config;
+      FakeHls.all.push(this);
+    }
+    loadSource(url: string) {
+      this.source = url;
+    }
+    attachMedia(media: HTMLMediaElement) {
+      this.media = media;
+    }
+    on(_e: 'hlsError', f: FakeHls['onError']) {
+      this.onError = f;
+    }
+    destroy() {
+      this.destroyed = true;
+    }
+  }
+  const load = async () => ({ default: FakeHls as never });
+  beforeEach(() => {
+    FakeHls.all = [];
+    FakeHls.supported = true;
+  });
+
+  it('switches to hls when no WebRTC frame played in 8 s, the token only on this origin', async () => {
+    const { playCamera, HLS_AFTER_MS } = await import('../video');
+    const stop = playCamera({ video: '/video/3/whep', hls: '/video/3/index.m3u8' }, 'tok', video, (s) => states.push(s), load);
+    await flush();
+    FakePC.all[0].fail(); // UDP blocked: not said unavailable while the fallback is to come
+    expect(states).toEqual(['connecting']);
+    await vi.advanceTimersByTimeAsync(HLS_AFTER_MS);
+    expect(FakeHls.all).toHaveLength(1);
+    expect(FakePC.all.every((pc) => pc.closed)).toBe(true);
+    const hls = FakeHls.all[0];
+    expect(hls.source).toBe(`${location.origin}/video/3/index.m3u8`);
+    expect(hls.media).toBe(video);
+    expect(hls.config).toMatchObject({ enableWorker: false, lowLatencyMode: true });
+    const headers: Array<[string, string]> = [];
+    const xhr = { setRequestHeader: (k: string, v: string) => headers.push([k, v]) } as unknown as XMLHttpRequest;
+    hls.config.xhrSetup(xhr, `${location.origin}/video/3/seg1.mp4`);
+    hls.config.xhrSetup(xhr, 'https://evil.example/seg.mp4');
+    expect(headers).toEqual([['Authorization', 'Bearer tok']]);
+    video.onplaying?.(new Event('playing'));
+    expect(states.at(-1)).toBe('playing');
+    const posted = offers().length;
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(offers()).toHaveLength(posted); // WHEP given up
+
+    // A fatal error: started again 2 s later.
+    hls.onError?.('hlsError', { fatal: true });
+    expect(hls.destroyed).toBe(true);
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(FakeHls.all).toHaveLength(2);
+    stop();
+    expect(FakeHls.all[1].destroyed).toBe(true);
+  });
+
+  it('stays on WebRTC once a frame played', async () => {
+    fetchMock.mockResolvedValueOnce(new Response('answer', { status: 201 }));
+    const { playCamera } = await import('../video');
+    const stop = playCamera({ video: '/video/3/whep', hls: '/video/3/index.m3u8' }, 'tok', video, (s) => states.push(s), load);
+    await flush();
+    video.onplaying?.(new Event('playing'));
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(FakeHls.all).toHaveLength(0);
+    stop();
+  });
+
+  it('plays hls at once without video, and says unavailable without MSE or for another origin', async () => {
+    const { playCamera } = await import('../video');
+    const stop = playCamera({ hls: '/video/3/index.m3u8' }, 'tok', video, (s) => states.push(s), load);
+    await flush();
+    expect(FakePC.all).toHaveLength(0);
+    expect(FakeHls.all).toHaveLength(1);
+    stop();
+    FakeHls.all = [];
+    FakeHls.supported = false;
+    playCamera({ hls: '/video/3/index.m3u8' }, 'tok', video, (s) => states.push(s), load);
+    await flush();
+    expect(states.at(-1)).toBe('unavailable');
+    states = [];
+    playCamera({ hls: '//evil.example/index.m3u8' }, 'tok', video, (s) => states.push(s), load);
+    expect(states).toEqual(['unavailable']);
+    expect(FakeHls.all).toHaveLength(0);
+  });
+});

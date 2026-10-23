@@ -913,16 +913,24 @@ export class AVRSimulator {
   }
 
   /**
-   * Stop simulation
+   * Pause simulation: the loop stops, what is scheduled ahead (pin changes,
+   * serial input) is kept for start() to go on with.
    */
-  stop(): void {
-    if (!this.running) return;
-
+  pause(): void {
     this.running = false;
     if (this.animationFrame !== null) {
       cancelAnimationFrame(this.animationFrame);
       this.animationFrame = null;
     }
+  }
+
+  /**
+   * Stop simulation
+   */
+  stop(): void {
+    if (!this.running) return;
+
+    this.pause();
     this.scheduledPinChanges = [];
 
     // Drop any bytes the previous run had queued for the sketch's RX

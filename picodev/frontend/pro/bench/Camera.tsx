@@ -4,7 +4,7 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import { text } from './text';
-import { playWhep, type VideoState } from './video';
+import { playCamera, type VideoState } from './video';
 
 export type View = 'decor' | 'schema' | 'camera';
 
@@ -25,16 +25,21 @@ export function ViewSwitch({ scene, camera, view, onChange }: { scene: boolean; 
   );
 }
 
-/** Plays the WHEP path `path` with the session token `token` while mounted. */
-export function Camera({ path, token }: { path: string; token: string }) {
+/** Plays the WHEP path `path` (its LL-HLS fallback `hls`) with the session token `token` while mounted. */
+export function Camera({ path, hls, token }: { path?: string; hls?: string; token: string }) {
   const t = text();
   const video = useRef<HTMLVideoElement>(null);
   const [state, setState] = useState<VideoState>('connecting');
   // The viewer's own freeze: the bench keeps running, even when the session is paused.
   const [frozen, setFrozen] = useState(false);
-  useEffect(() => playWhep(path, token, video.current!, setState), [path, token]);
-  // ponytail: a WebRTC stream has no buffer, so pause() keeps the last frame and play() is back at live.
-  const toggle = () => (frozen ? void video.current!.play().catch(() => {}) : video.current!.pause());
+  useEffect(() => playCamera({ video: path, hls }, token, video.current!, setState), [path, hls, token]);
+  // pause() keeps the last frame. WebRTC has no buffer, play() is back at live; HLS plays on from its buffer, so jump to its live edge.
+  const resume = () => {
+    const v = video.current!;
+    if (v.seekable.length) v.currentTime = v.seekable.end(v.seekable.length - 1);
+    void v.play().catch(() => {});
+  };
+  const toggle = () => (frozen ? resume() : video.current!.pause());
   return (
     <div className="bench-camera" data-state={state}>
       {/* A reconnection plays again by itself (autoPlay): onPlay then ends the freeze. */}

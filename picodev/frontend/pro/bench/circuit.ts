@@ -171,20 +171,39 @@ export function checkCircuit(c: PushedCircuit, boardId: string, boardPins: strin
   return null;
 }
 
-// ponytail: fixed cells, wide enough for the usual parts; a big part (a display) may overlap its neighbour.
-const CELL = { w: 160, h: 140, columns: 3 };
+/** The room a part takes on the canvas, in px. */
+export interface Size {
+  w: number;
+  h: number;
+}
+const PLACE = { gap: 40, row: 480, size: { w: 120, h: 100 } };
 
 /**
- * Places the parts without `x`/`y` on a grid to the right of everything else
- * (the board, from `boardRight`, and the parts that have a place).
+ * Places the parts without `x`/`y` to the right of everything else (the
+ * board, from `boardRight`, and the parts that have a place), in rows: left to
+ * right, a part that would pass `PLACE.row` starting the next row under the
+ * tallest of the current one. `size` is a part's room, measured by the page;
+ * a part it cannot measure counts as PLACE.size.
  */
-export function placeFree(c: PushedCircuit, boardRight: number, top: number): Circuit {
-  const left = Math.max(boardRight, ...c.components.filter((p) => p.x !== undefined).map((p) => p.x! + CELL.w)) + 40;
-  let n = 0;
+export function placeFree(c: PushedCircuit, boardRight: number, top: number, size: (p: PushedCircuit['components'][number]) => Size | null = () => null): Circuit {
+  const room = (p: PushedCircuit['components'][number]) => size(p) ?? PLACE.size;
+  const placed = (p: PushedCircuit['components'][number]) => p.x !== undefined && p.y !== undefined;
+  const left = Math.max(boardRight, ...c.components.filter(placed).map((p) => p.x! + room(p).w)) + PLACE.gap;
+  let x = left;
+  let y = top;
+  let rowH = 0;
   const components = c.components.map((p) => {
-    if (p.x !== undefined && p.y !== undefined) return { ...p, x: p.x, y: p.y };
-    const k = n++;
-    return { ...p, x: left + (k % CELL.columns) * CELL.w, y: top + Math.floor(k / CELL.columns) * CELL.h };
+    if (placed(p)) return { ...p, x: p.x!, y: p.y! };
+    const { w, h } = room(p);
+    if (x > left && x + w > left + PLACE.row) {
+      x = left;
+      y += rowH + PLACE.gap;
+      rowH = 0;
+    }
+    const at = { ...p, x, y };
+    x += w + PLACE.gap;
+    rowH = Math.max(rowH, h);
+    return at;
   });
   return { components, wires: c.wires };
 }

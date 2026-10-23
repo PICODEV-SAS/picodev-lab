@@ -29,6 +29,10 @@ and source link, branding, hidden marketing pages, Picodev setups as examples,
 the bench workspace in `bench/` (see <<bench>>) and the setup studio in
 `studio/` (see <<studio>>).
 
+|`picodev/frontend/headless/`
+|`run-level`: plays one level of a setup sheet against a compiled program in
+Node, for the CI of the setups repositories (see <<headless>>). Not in the image.
+
 |`picodev/backend/pro/`
 |Backend overlay, copied to `backend/app/pro/` and loaded by Velxio's
 `register_pro(app)`: a middleware that refuses the routes the demo does not need
@@ -39,9 +43,9 @@ and checks every compile and library request.
 
 |`picodev/docker/`
 |Image: `Dockerfile`, container `nginx.conf` (the public server) and
-`nginx-app.conf` (what it shares with the studio server), `entrypoint.sh`, and
+`nginx-app.conf` (what it shares with the studio server), `entrypoint.sh`,
 `render_config.py`, which turns the deployment file into what the editor and
-nginx read.
+nginx read, and `externalize_scripts.py`, run once on the build.
 
 |`picodev/config/lab.example.toml`
 |Documented example of the deployment file (see <<config>>).
@@ -110,8 +114,12 @@ same origin (`//host` is refused). One image serves any
 deployment without a rebuild.
 
 |`picodev/docker/render_config.py` -> nginx includes
-|Landing redirect, hidden pages, refused routes, request size, rate limits per
-address. Values are checked against strict patterns before they reach nginx.
+|Landing redirect, hidden pages (under any language prefix), refused routes,
+request size, rate limits per address, and the link previews: with `[brand]
+name`, Velxio's Open Graph and Twitter tags are renamed out of every page
+(`data-velxio-property`, `data-velxio-name`) and the instance's added before
+`</head>` (`name`, `share_description`, `share_image`). Values are checked
+against strict patterns, or escaped, before they reach nginx.
 
 |`picodev/docker/render_config.py` -> studio server
 |With a `[studio]` section only: a second nginx server on `listen`, its own
@@ -174,6 +182,11 @@ errors carry the client address. It
 purges a finished compile result 30 minutes after the build (Velxio's
 `JOB_TTL_S`) on time, not at the next compile. nginx removes the `preconnect`
 and `dns-prefetch` hints to third parties from Velxio's `index.html`.
+The pages carry no inline script: when the image is built,
+`picodev/docker/externalize_scripts.py` moves each one (analytics stub, theme
+bootstrap, desktop splash, in `index.html` and its prerendered copies) to
+`/assets/inline-<hash>.js`, in the same place, so a Content-Security-Policy of
+`script-src 'self'` needs no hash.
 
 `/config.js` is added to the pages by the container nginx (`sub_filter`), so
 Velxio's `index.html` is not patched.
@@ -182,6 +195,11 @@ One fix, to propose upstream: the AVR loop of
 `frontend/src/simulation/AVRSimulator.ts` runs until the clock has advanced by
 a frame's cycles. It counted instructions, which take 1 to 4 cycles, so the
 simulated clock ran about 1.5 times faster than real time.
+
+One method, to propose upstream: `AVRSimulator.pause()` stops the loop as
+`stop()` does but keeps what is scheduled ahead (pin changes, serial input), so
+the bench's pause does not lose a level's stimulus. Without it the bench falls
+back to `stop()`.
 
 One prop, to propose upstream: `SimulatorCanvas` takes `fitOnLoad`, which fits
 the zoom when a circuit loads as it already does on touch devices, for a canvas
@@ -197,7 +215,7 @@ the PRO ones (Raspberry Pi, STM32) included, whatever `allowedBoards` said.
 `/bench/<setup>` (free mode) and `/bench/<setup>/challenge` (challenge mode)
 are a page of the overlay, registered with Velxio's `registerProRoutes`; it
 replaces no Velxio page and patches no Velxio file but for the `fitOnLoad`
-prop and the picker's board list above. It reads a setup sheet
+prop, `AVRSimulator.pause()` and the picker's board list above. It reads a setup sheet
 (its format is defined by a JSON Schema kept with the setups, outside this
 repository) from
 `<setups_url>/<setup>/setup.json`, loads its circuit and sketch as a Velxio
@@ -257,13 +275,26 @@ owner publishes and applies; the visibility menu and the agent journal.
 
 |`SpectatorPage.tsx`, `replayProbe.ts`, `frame.tsx`
 |The spectator page `/w/<session>#v=<token>`: a `BenchProbe` fed by the
-relayed events drives the same scene player and traces. It compiles and
-simulates nothing and loads no part of Velxio's editor. `frame.tsx` holds the
-header, footer and message page both pages share.
+relayed events drives the same scene player (Défi only, as on the bench) and
+traces; the « Schéma » view shows the session's circuit (`state.circuit`, the
+sheet's without it) on Velxio's canvas, loaded on demand, with the probe marks
+of the bench page. It compiles and simulates nothing and loads no part of
+Velxio's editor. `frame.tsx` holds the header, footer and message page both
+pages share.
 
 |`assets/`
 |Geist and Geist Mono (SIL Open Font License 1.1, `OFL.txt`). Vite publishes
 them under `/assets/` with hashed names.
+
+|`video.ts`, `Camera.tsx`, `vendor/hls/`
+|The camera of a turn: WHEP over WebRTC, and LL-HLS when no frame played in
+8 s (`hls` of `turn`, `docs/live-protocol.adoc`). The HLS player is the light
+build of https://github.com/video-dev/hls.js[hls.js] 1.7.3 (Apache 2.0,
+`vendor/hls/LICENSE`), `dist/hls.light.min.mjs` of the npm package without its
+source map line, with a hand-written declaration of the few calls used. It is
+not a dependency of Velxio's `package.json`: Vite puts it in a chunk of its own,
+loaded by a dynamic import on fallback only. To update it, replace the file
+from a newer package and the version here.
 |===
 
 The image ships no logo. The header shows the one named by `[brand] logo_url`
@@ -296,8 +327,11 @@ bench filmed live in place of the scene, to the owner and the spectators, with
 the browser's WebRTC and the session token. During a turn on a bench that is not `sim`, the
 browser simulates nothing: Lancer compiles and the program goes to the bench's
 board through the hub, the schema goes back to the sheet's circuit (the bench's
-wiring) and cannot be edited, an agent's `circuit` is refused, and the traces
-say they are not the bench's analyser. On `capture_start` (optional too), the bench records every edge of the
+wiring) and cannot be edited, an agent's `circuit` is refused, the speed is
+disabled, the traces say they are not the bench's analyser, and without `video`
+the scene gives way to a note saying what goes on; at the end of the turn the
+visitor's own circuit (Libre) comes back. The visitor's logic capture downloads
+as a VCD file (PulseView, GTKWave). On `capture_start` (optional too), the bench records every edge of the
 asked probe pins over a stretch of simulated time and sends the record in
 chunks; it records, it never measures nor decodes. `state` carries the
 circuit (components and wires, in the setup sheet's shape); in free mode the
@@ -306,8 +340,8 @@ against its catalogue and the wire ends against the pins, and on `analog_start`
 it samples the voltage of board pins on the simulated clock (optional, both).
 `state` also carries the session clock (`clock`: simulated ms since the launch,
 speed, pause), and the first chunk of either capture its start on that clock
-(`t0_ms`). Pause / Reprendre and the speed (×0,1 to ×10, kept across runs, ×1 at
-page load) are the owner's, next to Lancer: a pause stops the simulator's loop
+(`t0_ms`). Pause / Reprendre and the speed (×0,1 to ×10, kept in `localStorage`,
+`picodev-lab:speed`) are the owner's, next to Lancer: a pause stops the simulator's loop
 without a reset (`Arrêter` still resets), ends an agent's capture still recording
 and lets the visitor's wait; the spectator page shows the clock, pause and speed.
 The hub out of reach, the
@@ -322,9 +356,13 @@ project.
 The visitor's sketch is kept in `localStorage` (`picodev-lab:sketch:<setup>`,
 and `picodev-lab:last-sketch` as `{name, content}` for the end page), and so is
 the level reached in Défi (`picodev-lab:level:<setup>`, the index of the current
-level; a reload resumes there, "Réinitialiser le code" leaves it). A
+level; a reload resumes there, "Réinitialiser le code" leaves it), and so are
+the hints shown (`picodev-lab:hints:<setup>`, a count per level id). A
 session ends on `<exit_url>?setup=<id>&mode=free|challenge&level=<n>&t=<seconds>`,
-`level` being the number of levels passed.
+`level` being the number of levels passed and `t` the time since the session
+began in this tab, kept in `sessionStorage` (`picodev-lab:bench-start:<setup>:<mode>`)
+so that a reload or a change of language keeps counting; following the end
+link forgets it.
 
 Both pages are in French or English, chosen by the FR / EN buttons of the bench
 header: the address does not change, the page reloads in the new language. The
@@ -398,6 +436,13 @@ The panel:
   circuit and sketch go into the editor, the rest of the sheet into the panel.
 * The scene: `scene.svg` dropped, its element ids listed (the targets of
   `scene.bindings`).
+* *Liaisons*: one row per entry of `scene.bindings` (64 at most), written into
+  the rest of `setup.json`, whose JSON stays editable. The target is picked
+  among the scene's ids and highlighted in the preview; the source is `pin`,
+  `pwm` or `servo` on a pin the circuit wires to the board; the effect comes
+  with its keys. The preview is the bench's own scene player
+  (`bench/engine/scene.ts`), fed by the editor's simulation while it runs,
+  otherwise by one control per source.
 * The rest of `setup.json` as JSON text (summary, libraries, probes,
   couplings, scene bindings, levels and their tests, i18n); the studio writes
   `schema`, `id`, `title`, `board` and `circuit` itself (the circuit in the
@@ -411,6 +456,10 @@ The panel:
   has no level), which opens the hub's `open_url` (absolute, on the lab's public
   origin, where the draft is served) in a new tab; *Télécharger le .zip*
   (`setup-zip`).
+* *Jeton d'administration*: a masked field for the token of the hub's
+  back-office, kept in this tab's `sessionStorage` (`picodev-lab:admin-token`)
+  and, when filled, sent as `Authorization: Bearer` on every `/admin/api/setup-*` request;
+  the studio server passes the header on unchanged.
 
 The folder sent as `files` is the one of the setups repositories, under
 `<id>/`: `setup.json`, the sketch files (`sketch.ino` first), `en/<file>` kept
@@ -418,6 +467,68 @@ from the served sheet, the scene, `solutions/`. The draft is kept in the
 studio origin's `localStorage` (`picodev-lab:studio:<id>`), nothing on the
 server; « Revenir à la version servie » drops it. French or English, as the
 bench.
+
+[[headless]]
+== Levels in CI
+
+`picodev/frontend/headless/` plays the tests of one level against a compiled
+program, without a browser, so that the setups repositories can check each
+level against its reference solution. It is the bench's own code
+(`bench/engine`, `bench/probe.ts`) over Velxio's `AVRSimulator` (avr8js), in
+the order the bench uses: load the program, apply the couplings, start, run
+the level. Only the circuit is missing (no SPICE): the board's inputs come from
+the couplings, the level's `stimulus` and the pull-ups the sketch enables, so a
+level that needs a part (a potentiometer, a sensor) to drive a pin cannot be
+played here. AVR boards only (`arduino-uno`, `arduino-nano`, `arduino-mega`,
+`attiny85`).
+
+It is bundled into one file with its own two dependencies (avr8js, pinned to
+the editor's version, and esbuild, both exact: the repository keeps no lock
+file), without installing or building the editor:
+
+[source,bash]
+----
+npm install --no-audit --no-fund --prefix picodev/frontend/headless && npm run --prefix picodev/frontend/headless build
+node picodev/frontend/headless/dist/run-level.mjs --sheet setup.json --level niveau-1 --hex sketch.ino.hex [--lang en]
+----
+
+`--sheet` is a `setup.json`, built or not (`files` is not read). It prints on
+stdout `{"setup", "level", "passed", "tests": [{"id", "status", "detail",
+"label"}]}`, and exits with 0 when every test passed, 1 when one failed, 2 when
+the level could not be played (bad arguments, unknown level, board that is
+not AVR).
+
+A setups repository calls it from a checkout of the public mirror at the lab
+release its sheets target, on a GitHub-hosted runner:
+
+[source,yaml]
+----
+- uses: actions/checkout@v5
+  with:
+    repository: PICODEV-SAS/picodev-lab
+    ref: vX.Y.Z                # a release with picodev/frontend/headless
+    path: lab
+    persist-credentials: false
+    sparse-checkout: |
+      frontend/src
+      picodev/frontend
+- uses: actions/setup-node@v4
+  with:
+    node-version: 22
+- run: npm install --no-audit --no-fund --prefix lab/picodev/frontend/headless && npm run --prefix lab/picodev/frontend/headless build
+# arduino-cli with the deployed [toolchain] (arduino/setup-arduino-cli, then core and lib install), then per solution:
+- run: |
+    set -e
+    for sol in setups/*/solutions/*.ino; do
+      id=$(basename "$(dirname "$(dirname "$sol")")"); level=$(basename "$sol" .ino); dir="build/$id-$level"
+      mkdir -p "$dir" && cp "$sol" "$dir/$id-$level.ino"
+      arduino-cli compile --fqbn "$(jq -r .board.fqbn "setups/$id/setup.json")" --output-dir "$dir/out" "$dir"
+      node lab/picodev/frontend/headless/dist/run-level.mjs --sheet "setups/$id/setup.json" --level "$level" --hex "$dir/out/$id-$level.ino.hex"
+    done
+----
+
+Its test (`headless/__tests__/`, with Velxio's vitest as below) plays a small
+compiled sketch, `__tests__/blink/`, kept with its HEX.
 
 == Build and test
 

@@ -1,15 +1,17 @@
 /**
  * The spectator page: /w/<session>#v=<viewer token>.
  *
- * Shows a session the way the hub relays it: the owner's code, the scene and
- * the traces replayed from `events` (./replayProbe), the serial output, the
- * test results. It never compiles nor simulates, and loads no part of
- * Velxio's editor or simulator.
+ * Shows a session the way the hub relays it: the owner's code, the scene (Défi
+ * only, as on the bench) and the traces replayed from `events` (./replayProbe),
+ * the schema of the session's circuit with its probes, the serial output, the
+ * test results. It never compiles nor simulates; Velxio's canvas, for the
+ * schema, is loaded on demand.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { BRAND_NAME } from '@velxio/lib/deploymentConfig';
-import { Camera } from './Camera';
+import { Camera, ViewSwitch, type View } from './Camera';
+import { readCircuit } from './circuit';
 import { HOME_URL, HUB_URL } from './config';
 import { mountScene } from './engine/scene';
 import { Brand, Footer, Message, SimClock } from './frame';
@@ -25,6 +27,8 @@ import type { BenchEvent } from './types';
 import './bench.css';
 
 const MAX_SERIAL = 20_000;
+// Velxio's canvas is large: fetched once the page has a circuit to show.
+const SpectatorSchema = lazy(() => import('./Schema').then((m) => ({ default: m.SpectatorSchema })));
 
 /** A `state` relayed from the owner's browser: keep it only if it has the expected shape. */
 function readState(m: Record<string, unknown>): BenchState | null {
@@ -77,8 +81,8 @@ function Spectator({ sessionId, token }: { sessionId: string; token: string }) {
   const [compile, setCompile] = useState<{ ok: boolean; log: string; agent: boolean } | null>(null);
   const [serial, setSerial] = useState('');
   const [closed, setClosed] = useState(false);
-  /** The owner's turn on a bench of the hub (v0.4), if one is running; `video`: the bench filmed live (v0.10). */
-  const [turn, setTurn] = useState<{ kind: string; ends_at: number; video?: string } | null>(null);
+  /** The owner's turn on a bench of the hub (v0.4), if one is running; `video`: the bench filmed live (v0.10), `hls` its fallback (v0.20). */
+  const [turn, setTurn] = useState<{ kind: string; ends_at: number; video?: string; hls?: string } | null>(null);
   const [setup, setSetup] = useState<LoadedSetup | null>(null);
   const [setupError, setSetupError] = useState('');
   const scene = useRef<HTMLDivElement>(null);
@@ -114,7 +118,7 @@ function Spectator({ sessionId, token }: { sessionId: string; token: string }) {
           case 'turn':
           case 'turn_end': {
             const q = queueMessage(m);
-            if (q?.type === 'turn') setTurn({ kind: q.kind, ends_at: q.ends_at, video: q.video });
+            if (q?.type === 'turn') setTurn({ kind: q.kind, ends_at: q.ends_at, video: q.video, hls: q.hls });
             else if (q) setTurn(null);
             break;
           }
@@ -145,10 +149,25 @@ function Spectator({ sessionId, token }: { sessionId: string; token: string }) {
     };
   }, [setupId, sessionId]);
 
+  // Libre edits the circuit, which the scene would no longer show: the schema only, as on the bench.
+  const sceneSvg = state?.mode === 'challenge' ? setup?.sceneSvg : undefined;
   useEffect(() => {
-    if (!setup?.sceneSvg || !scene.current) return;
-    return mountScene(scene.current, setup.sceneSvg, setup.sheet.scene?.bindings ?? [], probe);
-  }, [setup, probe]);
+    if (!sceneSvg || !setup || !scene.current) return;
+    return mountScene(scene.current, sceneSvg, setup.sheet.scene?.bindings ?? [], probe);
+  }, [sceneSvg, setup, probe]);
+
+  // The views of the bench page; a turn with a camera shows it first.
+  const video = turn?.video;
+  const hls = turn?.hls;
+  const camera = !!(video || hls);
+  const views: View[] = camera ? ['camera', 'schema'] : sceneSvg ? ['decor', 'schema'] : ['schema'];
+  const [picked, setPicked] = useState<View | null>(null);
+  const [pickedFor, setPickedFor] = useState(camera);
+  if (pickedFor !== camera) {
+    setPickedFor(camera);
+    setPicked(null);
+  }
+  const view = picked && views.includes(picked) ? picked : views[0];
 
   useEffect(() => {
     serialBox.current?.scrollTo(0, serialBox.current.scrollHeight);
@@ -176,6 +195,10 @@ function Spectator({ sessionId, token }: { sessionId: string; token: string }) {
   const level = state?.mode === 'challenge' ? sheet?.levels[state.level] : undefined;
   const probesOf = (kind: 'scope' | 'logic') => sheet?.probes.filter((p) => p.kind === kind) ?? [];
   const files = state?.files ?? [];
+  // The owner's circuit (v0.8), or the sheet's from a hub that does not relay it.
+  const relayed = state?.circuit ? readCircuit(state.circuit as unknown as Record<string, unknown>) : null;
+  const sheetCircuit = sheet ? readCircuit(sheet.circuit as unknown as Record<string, unknown>) : null;
+  const circuit = typeof relayed === 'object' && relayed ? relayed : typeof sheetCircuit === 'object' ? sheetCircuit : null;
 
   return (
     <div className="bench">
@@ -225,19 +248,25 @@ function Spectator({ sessionId, token }: { sessionId: string; token: string }) {
         <section className="bench-hub" aria-label={t.benchTitle}>
           <div className="bench-hub-panel">
             {setupError && <p className="bench-message-detail">{setupError}</p>}
-            {(setup?.sceneSvg || turn?.video) && (
-              <div className="bench-view" data-view={turn?.video ? 'camera' : 'decor'}>
+            {(sheet || camera) && (
+              <div className="bench-view" data-view={view}>
                 <span className="bench-view-label">
                   <i />
-                  {turn?.video ? t.cameraLabel : t.replayed}
+                  {view === 'camera' ? t.cameraLabel : view === 'decor' ? t.replayed : t.schemaReplayed}
                 </span>
+                <ViewSwitch scene={!!sceneSvg} camera={camera} view={view} onChange={setPicked} />
                 {clock && <SimClock nowMs={clockNow} running={!!state?.running} paused={clock.paused} speed={clock.speed} />}
-                {/* As on the bench page, the camera takes the place of the scene during the turn; the scene stays mounted. */}
-                {setup?.sceneSvg && <div ref={scene} className="bench-scene" role="img" aria-label={t.sceneAria} hidden={!!turn?.video} />}
-                {turn?.video && <Camera path={turn.video} token={token} />}
+                {/* As on the bench page, the scene and the schema stay mounted when hidden. */}
+                {sceneSvg && <div ref={scene} className="bench-scene" role="img" aria-label={t.sceneAria} hidden={view !== 'decor'} />}
+                {sheet && circuit && (
+                  <Suspense fallback={null}>
+                    <SpectatorSchema kind={sheet.board.kind} circuit={circuit} probes={sheet.probes} probe={probe} running={!!state?.running} hidden={view !== 'schema'} />
+                  </Suspense>
+                )}
+                {view === 'camera' && camera && <Camera path={video} hls={hls} token={token} />}
               </div>
             )}
-            {clock && !setup?.sceneSvg && !turn?.video && <SimClock nowMs={clockNow} running={!!state?.running} paused={clock.paused} speed={clock.speed} className="bench-clock-inline" />}
+            {clock && !sheet && !camera && <SimClock nowMs={clockNow} running={!!state?.running} paused={clock.paused} speed={clock.speed} className="bench-clock-inline" />}
 
             <div className="bench-traces">
               {(['scope', 'logic'] as const).map(

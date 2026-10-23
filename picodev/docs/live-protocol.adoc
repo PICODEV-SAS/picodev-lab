@@ -25,8 +25,8 @@ the levels and the spectator page. Picodev runs its own hub for Picodev Lab,
 which also drives real benches, a queue in front of them and an agent service
 (MCP); those are not part of this project. The messages the editor exchanges
 about benches and the queue, the logic capture, the circuit and the analog
-capture, the messages of the hub's operator, the hub's status and draft setup
-sheets are listed at the end, as optional extensions. This document and the example relay
+capture, the messages of the hub's operator, the hub's status, draft setup
+sheets and its error replies are listed at the end, as optional extensions. This document and the example relay
 are enough to use live sharing without it.
 
 == Where the hub lives
@@ -100,10 +100,15 @@ resumes it. A server should check `setup` against the setups it serves, and
 `mode` is `free` or `challenge`.
 
 `GET /sessions/<id>`, owner token::
-`{session, setup, mode, visibility, viewer, viewers}`; `viewer` is `null` when
+`{session, setup, mode, visibility, viewer, viewers, share?}`; `viewer` is `null` when
 the session is private, `viewers` is the number of spectators connected. The
 editor calls it when it resumes a session (a reload, or a link `?s=…#o=…`) to
-learn its visibility and spectator link.
+learn its visibility and spectator link. `share` (v0.20, optional) is the path
+of a result signed by the hub, `/p/<share>`; the editor reads it again just
+before it leaves for the end page (`[bench] exit_url`), strips the leading
+`/p/` (or `/en/p/`) and adds `&share=<share>`, URL-encoded, to the address it
+already builds (`?setup=&mode=&level=&t=`). Without `share`, or when the request
+fails or takes more than 3 s, it leaves without it.
 
 `PUT /sessions/<id>/visibility`, owner token, body `{visibility}`::
 Changes the visibility. Response `{visibility, viewer}`: the new viewer token,
@@ -266,7 +271,9 @@ benches connected, `free` the free ones, `waiting` the places in the queue.
 `status` is `open` (the default when absent) or `soon`: a pair announced with no
 bench to join yet. The editor offers a button per `kind` that has at least one
 bench for its setup, and an inactive « Banc réel · bientôt » (« Real bench ·
-soon ») for a `soon` pair. Any error, a 404 included, means "no bench".
+soon ») for a `soon` pair. Any error, a 404 included, means "no bench". The
+editor reads it once, when the bench opens; after that it follows the
+`benches` messages of the live channel (v0.20), and polls nothing.
 
 On the owner's live channel:
 
@@ -276,8 +283,9 @@ On the owner's live channel:
 
 |owner -> hub |`queue_join` |`kind`: take a place in the queue of the session's setup.
 |owner -> hub |`queue_leave` |Give the place back, or the turn once it started.
+|hub -> owner |`benches` |v0.20. `benches`: `[{kind, benches, free, waiting, status}]`, the pairs of the session's setup in the shape of `GET /benches` without `setup` (an empty list: no bench). Sent after every `hello` of the owner, then at every change. The editor replaces its offer with it, filtered as `GET /benches`.
 |hub -> owner |`queue` |`kind`, `position` (from 1), `waiting`, `eta_s` (estimated wait in seconds, an upper bound; 0 when a bench is free). Sent on joining and at every change.
-|hub -> owner |`turn` |`kind`, `bench` (its id), `ends_at` (Unix seconds, an integer), `video` (optional, see below): the turn starts.
+|hub -> owner |`turn` |`kind`, `bench` (its id), `ends_at` (Unix seconds, an integer), `video` and `hls` (optional, see below): the turn starts.
 |hub -> owner |`turn_end` |`reason`: the place or the turn is over: `time`, `left`, `owner` (owner away for too long), `bench` (bench lost or faulty), `ended` (session over).
 |hub -> owner |`queue_error` |`code`: a refusal: `unknown_kind` (no such kind for this setup), `full` (queue full), `already_queued`, `soon` (the pair is announced, not open). `detail`: a text for logs, never shown; the editor says the refusal in the visitor's language from `code`, a generic text for any other.
 |hub -> spectator |`turn`, `turn_end` |As above, for a turn only, without `bench`.
@@ -300,6 +308,21 @@ may start a few seconds after `turn`), and closes the connection at
 `turn_end`, deleting the WHEP resource (`Location`) if one was given. The hub
 may cut a player earlier, when its right ends; a player still allowed opens
 again by itself. Without `video` there is no video for this turn.
+
+`hls` (v0.20), when present, is the path of the same video in LL-HLS
+(`/video/<n>/index.m3u8`), a path on the editor's origin checked like `video`.
+It is the fallback for a network that lets no WebRTC through (UDP blocked):
+when no WebRTC frame has played 8 s after the player started, the page closes
+the WHEP connection and plays `hls` instead, until `turn_end`. It does so at
+once when `turn` has `hls` and no `video`. The player is hls.js (Apache 2.0),
+copied into this repository and loaded only then, so that no page loads it
+otherwise and no third party is asked for anything. Every request it makes on
+the editor's origin carries the session token (`owner` or `viewer`) as
+`Authorization: Bearer`; a request to any other origin carries none. It runs
+without a worker. After a fatal error it starts again every 2 s while the turn
+lasts. The latency is 1 to 3 s, against well under one for WebRTC. A front
+proxy that serves `hls` must allow `media-src 'self' blob:` in the editor's
+Content-Security-Policy.
 
 == Optional extension: logic capture
 
@@ -345,6 +368,57 @@ and `last`. If the channel drops while the chunks are being sent, the editor
 gives the capture up; the hub is expected to fail a capture that gets no
 `last` in time. Nothing of the capture goes to spectators.
 
+=== Bench capture in the editor (v0.20)
+
+During a real turn the browser simulates nothing, so the page's own capture
+has nothing to record. The capture panel stays on screen and asks the hub for
+a capture on the analyser of the bench instead; what it shows is the bench's
+last capture for the session, measured in the browser as above.
+
+[cols="1,1,4", options="header"]
+|===
+|Direction |`type` |Fields
+
+|owner -> hub |`capture_request` |`pins` (optional, pin numbers), `duration_ms`, `trigger` (optional, `{pin, edge}`), `wait_ms` (optional), `pre_ms` (optional): a capture on the bench's analyser, with the checks and bounds of the hub's own capture tool. Allowed only during a turn of the session on a bench; the hub refuses it with `error` (below): `refused` outside a turn, `busy` while a capture is recording, `invalid` for a field out of bounds. The editor sends the probed logic pins of the sheet and the duration the visitor chose, no trigger.
+|hub -> owner |`capture_chunk` |A chunk of a capture of the bench for this session, the visitor's or the agent's, as the bench sent it and once the hub has checked it: `capture`, `seq`, `initial`, `t0_ms` and `duration_ms` (first chunk; `duration_ms`, the window recorded, may be left out), `edges`, `last`; never `turn`. `t_us` counts from the start of the recording.
+|hub -> owner |`capture_error` |`capture`, `detail`: that capture failed.
+|===
+
+A capture the visitor asked for is the session's capture, the same as the
+agent's: the agent reads it, and it takes the hub's one capture slot. None of
+these messages go to spectators.
+
+The editor puts the chunks of one capture together in `seq` order (a chunk
+that does not follow is ignored) and measures them at `last`, over the pins of
+`initial`. The window is the first chunk's `duration_ms` when the hub relays
+it; without it, the duration the visitor asked for, and for a capture it did
+not ask for (the agent's) it ends at the last edge. On `capture_error` it says
+the capture failed, in the visitor's language; the `detail` is not shown. On
+an `error` whose `ref` is `capture_request` the panel leaves « Capture
+demandée » and says, in the visitor's language, that a capture is already
+recording (`busy`), that it is not the visitor's turn (`refused`), or that the
+hub refused it (any other code); the `detail` is not shown. The traces under the panel keep
+their note: they are the simulation's, stopped during the turn.
+
+== Optional extension: error replies
+
+A hub may answer a message it refuses on the owner's live channel (and on its
+benches' own channel) with `error`, and do nothing else with it (v0.20):
+
+[cols="1,1,4", options="header"]
+|===
+|Direction |`type` |Fields
+
+|hub -> owner |`error` |`code`: `invalid` (not JSON, unknown type, a field malformed or out of bounds), `refused` (well formed but not now: a chunk with no capture in progress, `capture_request` outside a turn…), `busy` (a capture is recording) or `rate` (over a rate limit, events or chunks). `ref`: the `type` refused (at most 32 characters) or `null`. `detail`: an English text for the console.
+|===
+
+At most one `error` per second and per connection; the others are left out.
+`queue_error` stays the reply of the queue, and an invalid `circuit` or `clock`
+inside `state` is still left out of it without an `error`. The editor writes
+`error` to the browser console as a warning and shows nothing, but for a
+refused `capture_request` (above): a reply it needs to act on has a message of
+its own.
+
 == Optional extension: circuit
 
 A hub may let an agent read and replace the circuit of the bench (components
@@ -376,7 +450,7 @@ when the circuit changes. When the circuit has more than 40 components or
 |===
 |Direction |`type` |Fields
 
-|hub -> owner |`circuit` |`components`, `wires`: replace the circuit with this one. In free mode only: in challenge mode the editor ignores the message, a level's circuit does not change. The editor stops the simulation, checks every component type against its own catalogue and every wire end against the pins of its component (or of the board), places the components without `x`/`y` on a free grid beside the others, replaces the circuit, then publishes `state`.
+|hub -> owner |`circuit` |`components`, `wires`: replace the circuit with this one. In free mode only: in challenge mode the editor ignores the message, a level's circuit does not change. The editor stops the simulation, checks every component type against its own catalogue and every wire end against the pins of its component (or of the board), places the components without `x`/`y` in rows beside the others, by the size of each, none covering another, replaces the circuit, then publishes `state`.
 |owner -> hub |`circuit_error` |`detail` (English text, fixed whatever the page's language): the circuit was refused (malformed, a component type the editor does not know, a board given as a component, a duplicate id, a wire to an unknown component or pin). Nothing was changed, and the simulation was not stopped.
 |===
 
@@ -389,11 +463,11 @@ The same path as the logic capture (recorded first, then sent in chunks), on
 messages of its own: the logic capture does not change. Optional as well; the
 editor does nothing until it receives `analog_start`.
 
-A channel is a pin of the board, by its Arduino number (A0 to A7 are 14 to 21
-on an Uno or a Nano). Its value is a voltage: on an input of the converter
-(A0 to A7), the voltage the circuit applies to it; on any other pin, its logic
-level times the supply voltage (5 V). A PWM output thus shows as a square wave,
-not as its mean.
+A channel is a pin of the board, by its Arduino number, as the simulator numbers
+it (A0 to A7 are 14 to 21 on a Nano, A0 to A15 are 54 to 69 on a Mega). Its
+value is a voltage: on an input of the converter (A0, A1…), the voltage the
+circuit applies to it; on any other pin, its logic level times the supply
+voltage (5 V). A PWM output thus shows as a square wave, not as its mean.
 
 [cols="1,1,4", options="header"]
 |===

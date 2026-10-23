@@ -191,6 +191,91 @@ export function sceneIds(svg: string): string[] {
   return [...doc.querySelectorAll('[id]')].map((el) => el.id);
 }
 
+// ── Scene bindings (architecture v0.20, « Liaisons ») ───────────────────────
+
+/** The board pins the circuit wires to the board, sorted: what a binding may read (check.py's board_pin). */
+export function boardPins(circuit: Circuit, boardKind: string): number[] {
+  const pins = new Set<number>();
+  for (const w of circuit.wires)
+    for (const end of [w.start, w.end]) {
+      const m = end.componentId === boardKind ? /^(?:D?(\d+)|A(\d))$/.exec(end.pinName) : null;
+      if (m) pins.add(m[2] !== undefined ? 14 + Number(m[2]) : Number(m[1]));
+    }
+  return [...pins].sort((a, b) => a - b);
+}
+
+export const SOURCE_KINDS = ['pin', 'pwm', 'servo'] as const;
+export const EFFECTS = ['visible', 'fill', 'rotate', 'translate', 'spin'] as const;
+export type Effect = (typeof EFFECTS)[number];
+/** The keys of each effect (the setups' JSON Schema), with the value a new binding takes. `origin` is optional. */
+export const EFFECT_KEYS: Record<Effect, Record<string, string | number>> = {
+  visible: { when: 'high' },
+  fill: { on: '#E7746F', off: '#3A4A5E' },
+  rotate: { min: 0, max: 180, from: 0, to: 180 },
+  translate: { min: 0, max: 1, dx: 0, dy: 0 },
+  spin: { threshold: 0.5 },
+};
+export const HAS_ORIGIN: readonly Effect[] = ['rotate', 'spin'];
+export const BINDINGS_MAX = 64;
+
+export type Binding = Record<string, unknown>;
+
+/** `scene.bindings` of the rest of setup.json; null when it cannot be read or has no scene. */
+export function bindingsOf(rest: string): Binding[] | null {
+  const parsed = parseRest(rest);
+  if ('error' in parsed || !isObj(parsed.value.scene)) return null;
+  const list = parsed.value.scene.bindings;
+  return Array.isArray(list) ? list.map((b) => (isObj(b) ? b : {})) : [];
+}
+
+/** The rest of setup.json with these bindings (unchanged when it cannot be read). */
+export function withBindings(rest: string, bindings: Binding[]): string {
+  const parsed = parseRest(rest);
+  if ('error' in parsed) return rest;
+  const scene = isObj(parsed.value.scene) ? parsed.value.scene : { svg: SCENE_NAME };
+  return pretty({ ...parsed.value, scene: { ...scene, bindings } });
+}
+
+/**
+ * A binding with `effect` and only its keys, in the schema's order: the ones
+ * it already has are kept (min and max from rotate to translate, origin from
+ * rotate to spin), the others take their default.
+ */
+export function shapeBinding(b: Binding, effect: Effect): Binding {
+  const out: Binding = { target: b.target ?? '', source: b.source ?? 'pin:13', effect };
+  for (const [k, v] of Object.entries(EFFECT_KEYS[effect])) out[k] = typeof b[k] === typeof v ? b[k] : v;
+  if (HAS_ORIGIN.includes(effect) && Array.isArray(b.origin)) out.origin = b.origin;
+  return out;
+}
+
+// ── The back-office token (architecture v0.20, item 7) ──────────────────────
+
+/** Kept for this tab only, never in localStorage. */
+export const TOKEN_KEY = 'picodev-lab:admin-token';
+
+export function loadToken(): string {
+  try {
+    return sessionStorage.getItem(TOKEN_KEY) ?? '';
+  } catch {
+    return '';
+  }
+}
+
+export function saveToken(token: string): void {
+  try {
+    if (token) sessionStorage.setItem(TOKEN_KEY, token);
+    else sessionStorage.removeItem(TOKEN_KEY);
+  } catch {
+    // kept in the page only
+  }
+}
+
+/** The headers of a back-office request: JSON, and the token when there is one. */
+export function adminHeaders(token: string): Record<string, string> {
+  const t = token.trim();
+  return { 'Content-Type': 'application/json', ...(t ? { Authorization: `Bearer ${t}` } : {}) };
+}
+
 /** Where a problem of setup-check belongs: the field it names first (check.py writes "<field> : …"). */
 export type Field = 'identity' | 'editor' | 'scene' | 'sheet' | 'solutions';
 export function fieldOf(problem: string): Field {

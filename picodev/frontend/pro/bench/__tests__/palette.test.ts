@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { PALETTE, labelWidth, pinName, probeColor, probeMarks, stagger } from '../palette';
+import { PALETTE, labelWidth, probeColor, probeMarks, stagger, toView } from '../palette';
 
 describe('probe palette', () => {
   it('colours a probe by its rank among the probes of its kind, as the traces draw them', () => {
@@ -14,11 +14,13 @@ describe('probe palette', () => {
     expect(probeColor('scope', PALETTE.scope.length)).toBe(PALETTE.scope[0]); // wraps around
   });
 
-  it('finds the pin a board names', () => {
-    expect(pinName(9, ['8', '9', 'GND.1'])).toBe('9');
-    expect(pinName(9, ['D8', 'D9'])).toBe('D9');
-    expect(pinName(14, ['13', 'A0'])).toBe('A0');
-    expect(pinName(42, ['13', 'A0'])).toBeNull();
+});
+
+describe('toView', () => {
+  it('follows a rotated, scaled and moved world', () => {
+    // A quarter turn, twice as big, moved by (100, 50): (10, 0) lands at (100, 70).
+    expect(toView({ a: 0, b: 2, c: -2, d: 0, e: 100, f: 50 }, 10, 0)).toEqual({ x: 100, y: 70 });
+    expect(toView({ a: 0, b: 2, c: -2, d: 0, e: 100, f: 50 }, 0, 10)).toEqual({ x: 80, y: 50 });
   });
 });
 

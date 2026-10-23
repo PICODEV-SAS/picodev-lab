@@ -12,6 +12,11 @@ name = "Picodev Lab"                                   # header, page titles, re
 source_url = "https://github.com/PICODEV-SAS/picodev-lab"  # AGPL source offer shown on every page
 logo_url = "/site/img/logo-couleur.png"                # logo of the bench workspace, served by the front proxy; absent = the name as text
 landing = "/example/picodev-setup-a"                   # where "/" redirects; absent = Velxio home
+# Link previews (Open Graph, Twitter) of every page: with `name`, Velxio's tags
+# (velxio.dev's title and image) are set aside and the page shows `name`, and
+# these two when set. No `name`: Velxio's tags.
+share_description = "Write Arduino code, simulate it in your browser."  # og:description, twitter:description
+share_image = "https://lab.example.org/site/img/share.png"              # og:image, twitter:image: an absolute https URL
 
 [boards]
 allowed = ["arduino-nano", "arduino-uno"]              # board kinds offered in the editor

@@ -1,0 +1,14 @@
+{
+  "name": "picodev-lab-headless",
+  "private": true,
+  "description": "Plays the levels of a setup sheet in Node, for the CI of the setup repositories. See picodev/README.adoc.",
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "scripts": {
+    "build": "NODE_PATH=node_modules esbuild run-level.ts --bundle --platform=node --target=node20 --format=esm --log-level=warning --outfile=dist/run-level.mjs"
+  },
+  "devDependencies": {
+    "avr8js": "0.21.0",
+    "esbuild": "0.28.2"
+  }
+}

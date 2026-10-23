@@ -67,7 +67,7 @@ describe('circuit (v0.8)', () => {
     expect(pinKnown(['A', 'C'], 'K')).toBe(false);
   });
 
-  it('places the parts without a place on a grid right of the board and of the placed parts', () => {
+  it('places the parts without a place in rows right of the board and of the placed parts', () => {
     const c = placeFree(
       pushed([], [
         { type: 'wokwi-led', id: 'a', properties: {} },
@@ -78,12 +78,27 @@ describe('circuit (v0.8)', () => {
       50,
     );
     expect(c.components.map((p) => [p.id, p.x, p.y])).toEqual([
-      ['a', 700, 50],
+      ['a', 660, 50],
       ['b', 500, 0],
-      ['c', 860, 50],
-      ['d', 1020, 50],
-      ['e', 700, 190],
+      ['c', 820, 50],
+      ['d', 980, 50],
+      ['e', 660, 190],
     ]);
     expect(placeFree(pushed([], [{ type: 'wokwi-led', id: 'a', properties: {} }]), 300, 0).components[0]).toMatchObject({ x: 340, y: 0 });
+  });
+
+  it('places by the size of each part: no part covers another', () => {
+    const sizes: Record<string, { w: number; h: number }> = { lcd: { w: 330, h: 140 }, oled: { w: 150, h: 120 }, big: { w: 600, h: 300 } };
+    const parts = ['led1', 'lcd', 'led2', 'oled', 'led3', 'big', 'led4'].map((id) => ({ type: 'wokwi-led', id, properties: {} }));
+    const fixed = { type: 'wokwi-led', id: 'fixed', x: 400, y: 0, properties: {} };
+    const sizeOf = (p: { id: string }) => sizes[p.id] ?? (p.id === 'fixed' ? { w: 500, h: 50 } : null);
+    const c = placeFree(pushed([], [...parts, fixed]), 300, 0, sizeOf);
+    const box = (p: (typeof c.components)[number]) => ({ ...p, ...(sizeOf(p) ?? { w: 120, h: 100 }) });
+    const boxes = c.components.map(box);
+    for (const a of boxes)
+      for (const b of boxes)
+        if (a !== b) expect(a.x + a.w <= b.x || b.x + b.w <= a.x || a.y + a.h <= b.y || b.y + b.h <= a.y, `${a.id} covers ${b.id}`).toBe(true);
+    expect(boxes.filter((p) => p.id !== 'fixed').every((p) => p.x >= 400 + 500 + 40)).toBe(true); // right of the placed part, by its size
+    expect(boxes.find((p) => p.id === 'big')!.x).toBe(940); // too wide for any row: alone on its own
   });
 });

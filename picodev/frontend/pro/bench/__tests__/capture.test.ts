@@ -3,7 +3,7 @@
  * is the one of the hub's test_capture_square_wave: both must give the same numbers.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { CAPTURE_MAX_EDGES, createRecorder, measure, type CaptureEdge, type Recording } from '../capture';
+import { CAPTURE_MAX_EDGES, createRecorder, measure, toVcd, type CaptureEdge, type Recording } from '../capture';
 import { logicCapture } from '../hub';
 import { fakeProbe } from '../engine/__tests__/fakeProbe';
 import type { SetupSheet } from '../types';
@@ -125,5 +125,44 @@ describe('recorder, shared by the page and the agent', () => {
     expect(sent.filter((m) => m.type === 'capture_error')).toEqual([]);
     agent.close();
     recorder.close();
+  });
+});
+
+describe('toVcd', () => {
+  it('writes the initial levels, the edges by time and the end of the window', () => {
+    const rec: Recording = {
+      pins: [2, 6],
+      durationMs: 1,
+      initial: { '2': 0, '6': 1 },
+      t0Ms: 5,
+      edges: [
+        [0, 2, 1],
+        [250, 2, 0],
+        [250, 6, 0],
+        [2000, 2, 1], // past the window
+      ],
+    };
+    expect(toVcd(rec, (p) => (p === 2 ? 'D2' : 'clock out'))).toBe(
+      [
+        '$version Picodev Lab $end',
+        '$timescale 1us $end',
+        '$scope module bench $end',
+        '$var wire 1 ! D2 $end',
+        '$var wire 1 " clock_out $end',
+        '$upscope $end',
+        '$enddefinitions $end',
+        '#0',
+        '$dumpvars',
+        '0!',
+        '1"',
+        '$end',
+        '1!',
+        '#250',
+        '0!',
+        '0"',
+        '#1000',
+        '',
+      ].join('\n'),
+    );
   });
 });

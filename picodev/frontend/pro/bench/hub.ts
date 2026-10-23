@@ -8,12 +8,13 @@
  * arrive in a fragment are taken out of the address at once and kept in
  * sessionStorage (this tab only).
  */
-import { ANALOG_MAX, ANALOG_PINS, createSampler, type AnalogSim, type Sampler } from './analog';
+import { ANALOG_MAX, createSampler, type AnalogSim, type Sampler } from './analog';
 import { CAPTURE_MAX_MS, createRecorder, type Interruption, type Recorder, type Recording } from './capture';
 import { circuitFits, readCircuit, type Circuit, type PushedCircuit } from './circuit';
 import { HUB_URL } from './config';
 import { text } from './text';
 import type { BenchEvent, BenchProbe, Lang, SetupSheet, TestResult } from './types';
+import type { BoardPins } from './wiring';
 
 export type Visibility = 'private' | 'link' | 'public';
 /** `replaced`: another tab took over this session's owner channel. */
@@ -67,7 +68,8 @@ export const isClock = (c: unknown): c is Clock => {
 const SESSION_RE = /^[A-Za-z0-9_-]{1,128}$/;
 const MAX_FILES = 8;
 const FLUSH_MS = 100; // at most 10 `events` messages a second
-const MAX_BATCH = 400; // ponytail: drop the excess beyond that; a batch stays far below the 64 KiB a message may weigh
+const MAX_BATCH = 400; // events a message (live-protocol.adoc); far below the 64 KiB a message may weigh
+const MAX_BACKLOG = 10 * MAX_BATCH; // a second of messages waiting: past it, the backlog is coalesced
 const MAX_LOG = 16_000;
 const MAX_PROGRAM = 48 * 1024; // bytes of Intel HEX a real bench accepts
 const STATE_DEBOUNCE_MS = 300;
@@ -300,9 +302,28 @@ export function connectLive(
 // ── Owner ───────────────────────────────────────────────────────────────────
 
 /**
- * Feeds `send` with what the probe sees, in batches every 100 ms: the pins of
- * the sheet's probes and of its scene, the servos and PWM of its scene, the
- * serial output (merged into one event per batch).
+ * A backlog the link cannot keep up with, made short without a wrong end: the
+ * last event of each pin, PWM and servo, and the whole serial text in one
+ * event, in time order. A trace loses the pulses in between, never the level
+ * it ends on, and no serial character is lost.
+ */
+export function coalesce(events: BenchEvent[]): BenchEvent[] {
+  const last = new Map<string, BenchEvent>();
+  let serial: BenchEvent | undefined;
+  for (const e of events) {
+    if (e.k !== 'serial') last.set(`${e.k}:${e.pin}`, e);
+    else if (serial) serial.v += e.v as string;
+    else serial = { ...e };
+  }
+  return [...last.values(), ...(serial ? [serial] : [])].sort((a, b) => a.t - b.t);
+}
+
+/**
+ * Feeds `send` with what the probe sees, at most MAX_BATCH events every 100 ms:
+ * the pins of the sheet's probes and of its scene, the servos and PWM of its
+ * scene, the serial output (merged while nothing comes between). A burst waits
+ * for the next messages; a flood that would keep them more than a second
+ * behind is coalesced. Nothing is dropped.
  */
 export function recordEvents(sheet: SetupSheet, probe: BenchProbe, send: (events: BenchEvent[]) => void): () => void {
   const want = { pin: new Set(sheet.probes.map((p) => p.pin)), pwm: new Set<number>(), servo: new Set<number>() };
@@ -313,7 +334,8 @@ export function recordEvents(sheet: SetupSheet, probe: BenchProbe, send: (events
   let batch: BenchEvent[] = [];
   const t3 = (t: number) => Math.round(t * 1000) / 1000;
   const push = (e: BenchEvent) => {
-    if (batch.length < MAX_BATCH) batch.push(e);
+    batch.push(e);
+    if (batch.length > MAX_BACKLOG) batch = coalesce(batch);
   };
   const subs = [
     ...[...want.pin].map((pin) => probe.onPin(pin, (high, t) => push({ t: t3(t), k: 'pin', pin, v: high ? 1 : 0 }))),
@@ -326,9 +348,7 @@ export function recordEvents(sheet: SetupSheet, probe: BenchProbe, send: (events
     }),
   ];
   const timer = setInterval(() => {
-    if (!batch.length) return;
-    send(batch);
-    batch = [];
+    if (batch.length) send(batch.splice(0, MAX_BATCH));
   }, FLUSH_MS);
   return () => {
     clearInterval(timer);
@@ -412,8 +432,8 @@ export interface BenchOffer {
 /** What the hub says of this session's place (owner), or of its turn (owner and spectators). */
 export type QueueMessage =
   | { type: 'queue'; kind: string; position: number; waiting: number; eta_s: number }
-  /** `bench` is not sent to spectators. `video`: the WHEP path of the bench's camera, same origin. */
-  | { type: 'turn'; kind: string; bench?: string; ends_at: number; video?: string }
+  /** `bench` is not sent to spectators. `video`: the WHEP path of the bench's camera, `hls` (v0.20) its LL-HLS fallback, same origin. */
+  | { type: 'turn'; kind: string; bench?: string; ends_at: number; video?: string; hls?: string }
   | { type: 'turn_end'; reason: string }
   /** `code`: unknown_kind, full, already_queued, soon; anything else gets the generic text. The hub's `detail` is never shown. */
   | { type: 'queue_error'; code: string };
@@ -438,6 +458,7 @@ export function queueMessage(m: Record<string, unknown>): QueueMessage | null {
       const turn: QueueMessage = { type: 'turn', kind: m.kind, ends_at: m.ends_at };
       if (typeof m.bench === 'string') turn.bench = m.bench.slice(0, 32);
       if (isLocalPath(m.video)) turn.video = m.video;
+      if (isLocalPath(m.hls)) turn.hls = m.hls;
       return turn;
     }
     case 'turn_end':
@@ -453,7 +474,7 @@ export type QueueView =
   | { phase: 'none'; note?: string }
   | { phase: 'waiting'; kind: string; position: number; waiting: number; eta_s: number; note?: string }
   /** `seen`: the visitor closed the "your turn" dialog. */
-  | { phase: 'turn'; kind: string; bench?: string; ends_at: number; video?: string; seen: boolean; note?: string };
+  | { phase: 'turn'; kind: string; bench?: string; ends_at: number; video?: string; hls?: string; seen: boolean; note?: string };
 
 /** `reset`: the live channel (re)opened; the hub resends the place or turn in progress, if any. */
 export type QueueAction = QueueMessage | { type: 'reset' } | { type: 'seen' } | { type: 'note'; text: string };
@@ -482,7 +503,7 @@ export function queueView(view: QueueView, a: QueueAction): QueueView {
     case 'queue':
       return { phase: 'waiting', kind: a.kind, position: a.position, waiting: a.waiting, eta_s: a.eta_s };
     case 'turn':
-      return { phase: 'turn', kind: a.kind, bench: a.bench, ends_at: a.ends_at, video: a.video, seen: false };
+      return { phase: 'turn', kind: a.kind, bench: a.bench, ends_at: a.ends_at, video: a.video, hls: a.hls, seen: false };
     case 'turn_end':
       // A place or a turn: back to the offer, whatever the reason.
       return { phase: 'none', note: endNote(a.reason, view.phase === 'turn') };
@@ -498,22 +519,51 @@ export function queueView(view: QueueView, a: QueueAction): QueueView {
 }
 
 /**
- * The benches of `setup` from `GET <hub>/benches`: the open couples (at least one connected) and,
- * v0.18, the `soon` ones (announced, none to join); [] when the hub has none or does not answer.
+ * The benches of `setup` in a list of couples: the open ones (at least one connected) and, v0.18,
+ * the `soon` ones (announced, none to join). A couple without `setup` (the `benches` message, v0.20)
+ * is the session's setup.
  */
+export function readOffers(list: unknown, setup: string): BenchOffer[] {
+  if (!Array.isArray(list)) return [];
+  return list
+    .filter((b) => (b?.setup ?? setup) === setup && isKind(b.kind) && isCount(b.benches) && isCount(b.free) && isCount(b.waiting))
+    .map((b) => ({ ...b, status: b.status === undefined ? 'open' : b.status }))
+    .filter((b) => (b.status === 'open' && b.benches > 0) || b.status === 'soon')
+    .map(({ kind, benches, free, waiting, status }) => ({ setup, kind, benches, free, waiting, status }));
+}
+
+/** The benches of `setup` from `GET <hub>/benches` (readOffers); [] when the hub has none or does not answer. */
 export async function fetchBenches(setup: string): Promise<BenchOffer[]> {
   try {
     const res = await fetch(`${HUB_URL}/benches`);
-    if (!res.ok) return [];
-    const list: unknown = await res.json();
-    if (!Array.isArray(list)) return [];
-    return list
-      .filter((b) => b?.setup === setup && isKind(b.kind) && isCount(b.benches) && isCount(b.free) && isCount(b.waiting))
-      .map((b) => ({ ...b, status: b.status === undefined ? 'open' : b.status }))
-      .filter((b) => (b.status === 'open' && b.benches > 0) || b.status === 'soon')
-      .map(({ kind, benches, free, waiting, status }) => ({ setup, kind, benches, free, waiting, status }));
+    return res.ok ? readOffers(await res.json(), setup) : [];
   } catch {
     return []; // a hub without benches (the example relay) answers 404
+  }
+}
+
+// ── Signed share (v0.20) ────────────────────────────────────────────────────
+
+const SHARE_WAIT_MS = 3000;
+
+/**
+ * `href` (the end page's address, with its query) plus `&share=<share>`: the result the hub
+ * signed (`share` of `GET <hub>/sessions/<id>`, `/p/<share>`), read just before leaving.
+ * `href` unchanged without a session, without `share`, or when the hub does not answer in 3 s.
+ */
+export async function withShare(href: string, info: SessionInfo | null): Promise<string> {
+  if (!info?.owner) return href;
+  try {
+    const res = await fetch(`${HUB_URL}/sessions/${encodeURIComponent(info.session)}`, {
+      headers: { Authorization: `Bearer ${info.owner}` },
+      signal: AbortSignal.timeout(SHARE_WAIT_MS),
+    });
+    const share = res.ok ? ((await res.json()) as Record<string, unknown>).share : undefined;
+    // The end page takes the share itself, not the hub's path to it (and checks its shape).
+    const bare = typeof share === 'string' ? share.replace(/^\/(en\/)?p\//, '') : '';
+    return bare ? `${href}${href.includes('?') ? '&' : '?'}share=${encodeURIComponent(bare)}` : href;
+  } catch {
+    return href;
   }
 }
 
@@ -693,8 +743,8 @@ export function logicCapture(recorder: Recorder, running: () => boolean, send: (
       const { pins, duration_ms: duration, rate_hz: rate } = msg;
       if (typeof duration !== 'number' || !(duration >= 1 && duration <= ANALOG_MAX.ms) || typeof rate !== 'number' || !(rate >= ANALOG_MAX.minHz && rate <= ANALOG_MAX.maxHz))
         return refuse('Invalid analog capture request: duration_ms 1 to 10000, rate_hz 100 to 10000.');
-      if (!Array.isArray(pins) || !pins.length || pins.length > ANALOG_MAX.pins || !pins.every((p) => Number.isInteger(p) && p >= 0 && p < ANALOG_PINS))
-        return refuse('Invalid pins: 1 to 4 board pins, 0 to 21 (A0 to A7 are 14 to 21).');
+      if (!Array.isArray(pins) || !pins.length || pins.length > ANALOG_MAX.pins || !pins.every((p) => Number.isInteger(p) && (!sampler || sampler.pins.includes(p))))
+        return refuse(`Invalid pins: 1 to 4 board pins, by their Arduino number${sampler ? ` (this board: ${sampler.pins.join(', ')})` : ''}.`);
       if ((pins.length * rate * duration) / 1000 > ANALOG_MAX.samples) return refuse('Too many samples: at most 200000 (pins x rate_hz x duration_ms / 1000).');
       const why = notNow();
       if (why) return refuse(why);
@@ -712,6 +762,46 @@ export function logicCapture(recorder: Recorder, running: () => boolean, send: (
       if (cur && !cur.sending) fail(PAUSED);
     },
     close: drop,
+  };
+}
+
+/** A capture of the bench relayed by the hub (v0.20): waiting for its chunks, failed, or put together. */
+/** `refused`: the hub answered `capture_request` with `error` (its `code`; the detail is never shown). */
+export type BenchCapture = { phase: 'waiting' } | { phase: 'failed' } | { phase: 'refused'; why: 'busy' | 'refused' | 'other' } | { phase: 'done'; rec: Recording };
+
+const isEdge = (e: unknown): e is [number, number, 0 | 1] =>
+  Array.isArray(e) && e.length === 3 && Number.isSafeInteger(e[0]) && Number.isInteger(e[1]) && (e[2] === 0 || e[2] === 1);
+
+/**
+ * Puts the relayed `capture_chunk`s of one capture together, in `seq` order; a chunk that does not
+ * follow is ignored. The window is the first chunk's `duration_ms` when the hub relays it; else
+ * `durationMs`, the window the visitor asked for; else (the agent's) it ends at the last edge.
+ */
+export function benchCaptureReader(durationMs: () => number | undefined) {
+  let cur: { id: string; seq: number; rec: Recording; durationMs?: number } | null = null;
+  return (msg: Record<string, unknown>): BenchCapture | null => {
+    const id = msg.capture;
+    if (typeof id !== 'string') return null;
+    if (msg.type === 'capture_error') {
+      cur = null;
+      return { phase: 'failed' };
+    }
+    const { edges, initial } = msg;
+    if (!Array.isArray(edges) || !edges.every(isEdge)) return null;
+    if (msg.seq === 0) {
+      if (!initial || typeof initial !== 'object' || !Object.values(initial).every((v) => v === 0 || v === 1)) return null;
+      const pins = Object.keys(initial).map(Number).filter(Number.isInteger);
+      const t0 = Number.isSafeInteger(msg.t0_ms) ? (msg.t0_ms as number) : 0;
+      const relayed = Number.isSafeInteger(msg.duration_ms) && (msg.duration_ms as number) > 0 ? (msg.duration_ms as number) : undefined;
+      cur = { id, seq: 0, rec: { pins, durationMs: 0, initial: initial as Record<string, 0 | 1>, t0Ms: t0, edges: [] }, durationMs: relayed };
+    } else if (!cur || cur.id !== id || msg.seq !== cur.seq + 1) return null;
+    else cur.seq++;
+    for (const e of edges) cur.rec.edges.push(e);
+    if (msg.last !== true) return { phase: 'waiting' };
+    const { rec, durationMs: relayed } = cur;
+    cur = null;
+    rec.durationMs = relayed ?? durationMs() ?? Math.max(1, Math.ceil((rec.edges.at(-1)?.[0] ?? 0) / 1000));
+    return { phase: 'done', rec };
   };
 }
 
@@ -737,8 +827,13 @@ export interface OwnerHooks {
    * refused (English, for the agent), nothing changed.
    */
   circuit?(circuit: PushedCircuit): Promise<string | null>;
-  /** The board's simulator, for the analog capture (v0.8); without it, analog_start is refused. */
+  /** The board's simulator and its pins, for the analog capture (v0.8); without them, analog_start is refused. */
   sim?(): AnalogSim | null;
+  board?: BoardPins;
+  /** `benches` (v0.20): the offer of this setup, pushed by the hub. */
+  offers?(offers: BenchOffer[]): void;
+  /** A capture of the bench relayed by the hub (v0.20), the visitor's or the agent's. */
+  benchCapture?(capture: BenchCapture): void;
 }
 
 export interface OwnerLink {
@@ -755,6 +850,8 @@ export interface OwnerLink {
   paused(): void;
   /** The circuit may have changed: publishes `state` (debounced) when it did. */
   circuitChanged(): void;
+  /** `capture_request` (v0.20): a capture on the bench's analyser during a real turn; false when the channel is down. */
+  requestCapture(pins: number[], durationMs: number): boolean;
   close(): void;
 }
 
@@ -783,8 +880,11 @@ export function startOwner(sheet: SetupSheet, mode: string, probe: BenchProbe, h
   };
   // The page's recorder when it has one: one capture at a time, the agent's or the visitor's.
   const recorder = shared ?? createRecorder(sheet, probe);
-  const sampler = hooks.sim ? createSampler(hooks.sim, probe) : undefined;
+  const sampler = hooks.sim && hooks.board ? createSampler(hooks.sim, probe, hooks.board) : undefined;
   const capture = logicCapture(recorder, () => hooks.state().running, (msg) => !!live?.send(msg), sampler, () => !!hooks.state().clock?.paused);
+  /** The duration of the visitor's bench capture still awaited, if any. */
+  let asked: number | undefined;
+  const readBenchCapture = benchCaptureReader(() => asked);
 
   const unavailable = (e: unknown) => {
     if (closed) return;
@@ -862,6 +962,25 @@ export function startOwner(sheet: SetupSheet, mode: string, probe: BenchProbe, h
           case 'level':
             if (Number.isInteger(msg.level) && (msg.level as number) >= 0) hooks.level?.(msg.level as number);
             break;
+          case 'benches':
+            hooks.offers?.(readOffers(msg.benches, sheet.id));
+            break;
+          // The owner sends these for the browser's captures; from the hub they are the bench's.
+          case 'capture_chunk':
+          case 'capture_error': {
+            const got = readBenchCapture(msg);
+            if (got && got.phase !== 'waiting') asked = undefined;
+            if (got) hooks.benchCapture?.(got);
+            break;
+          }
+          case 'error':
+            if (msg.ref === 'capture_request') {
+              asked = undefined; // refused: the next capture is not the visitor's
+              hooks.benchCapture?.({ phase: 'refused', why: msg.code === 'busy' || msg.code === 'refused' ? msg.code : 'other' });
+            }
+            // The detail for the console only, in English.
+            console.warn('bench: the hub refused a message,', String(msg.code), String(msg.ref), String(msg.detail ?? '').slice(0, 500));
+            break;
           default: {
             const q = queueMessage(msg);
             if (q) hooks.queue?.(q);
@@ -895,6 +1014,11 @@ export function startOwner(sheet: SetupSheet, mode: string, probe: BenchProbe, h
       }
       log = (log.length > MAX_LOG ? LOG_CUT + log.slice(-MAX_LOG) : log) + note;
       live?.send(compileMessage(ok, log, ok ? program : undefined, origin));
+    },
+    requestCapture(pins, durationMs) {
+      if (!live?.send({ type: 'capture_request', pins, duration_ms: durationMs })) return false;
+      asked = durationMs;
+      return true;
     },
     joinQueue: (kind) => !!live?.send({ type: 'queue_join', kind }),
     leaveQueue: () => !!live?.send({ type: 'queue_leave' }),

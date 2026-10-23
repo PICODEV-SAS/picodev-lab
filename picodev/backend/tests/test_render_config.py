@@ -5,6 +5,7 @@ Run from the repository root:
 """
 import importlib.util
 import json
+import re
 import pathlib
 import tomllib
 
@@ -49,6 +50,48 @@ def test_example_reaches_the_editor_and_nginx():
     assert "limit_req zone=lab_compile burst=6 nodelay;" in server
 
 
+def _location_regex(server: str, name: str) -> re.Pattern:
+    """The regex of the `location ~*` naming ``name``, as nginx matches it (case-insensitive)."""
+    line = next(l for l in server.splitlines() if l.startswith("    location ~* ") and name in l)
+    assert "{" not in line.split()[2], "nginx needs a regex with braces quoted"
+    return re.compile(line.split()[2], re.I)
+
+
+def test_hidden_pages_match_every_language_prefix():
+    cfg = {"routes": {"hidden_pages": ["editor", "examples", "example"]}, "studio": STUDIO}
+    server = rc.nginx_server(cfg)
+    for name in ("editor", "studio"):
+        rx = _location_regex(server, name)
+        for path in (f"/{name}", f"/{name}/", f"/fr/{name}", f"/en/{name}", f"/pt-br/{name}",
+                     f"/zh-cn/{name}/x", f"/PT-BR/{name}", f"/{name.upper()}"):
+            assert rx.search(path), path
+        for path in (f"/{name}s-of-mine", f"/bench/{name}", f"/fra/{name}", f"/pt-brx/{name}"):
+            assert not rx.search(path), path
+    rx = _location_regex(server, "examples")
+    for path in ("/zh-cn/example/blink", "/pt-br/examples", "/example/blink", "/ja/examples/x"):
+        assert rx.search(path), path
+    assert not rx.search("/bench/setup-a")
+
+
+def test_share_tags_follow_the_brand():
+    # No name: Velxio's tags stay.
+    assert "sub_filter" not in rc.nginx_server({}) and rc.share_filters({"brand": {"share_image": "x"}}) == ""
+    assert rc.share_filters({"brand": {"name": ""}}) == ""
+    server = rc.nginx_server(EXAMPLE)
+    assert "sub_filter '<meta property=\"og:' '<meta data-velxio-property=\"og:';" in server
+    assert "sub_filter '<meta name=\"twitter:' '<meta data-velxio-name=\"twitter:';" in server
+    head = next(l for l in server.splitlines() if "'</head>'" in l)
+    assert '<meta property="og:title" content="Picodev Lab" />' in head
+    assert '<meta property="og:image" content="https://lab.example.org/site/img/share.png" />' in head
+    assert '<meta name="twitter:card" content="summary_large_image" />' in head
+    assert "velxio" not in head.lower()
+    # Text is escaped for HTML and for the nginx string; no image: a small card.
+    bare = rc.share_filters({"brand": {"name": "A'b \"c\" $host <x> \\"}})
+    assert "A&#x27;b &quot;c&quot; &#36;host &lt;x&gt; &#92;" in bare
+    assert 'twitter:card" content="summary"' in bare and "og:image" not in bare and "og:description" not in bare
+    assert rc.share_filters({"brand": {"name": "x"}}) == rc.share_filters({"brand": {"name": " x "}})
+
+
 def test_script_end_tag_cannot_close_the_config_script():
     js = rc.frontend_config({"brand": {"name": "</script><script>alert(1)"}})
     assert "</script>" not in js
@@ -65,6 +108,9 @@ def test_script_end_tag_cannot_close_the_config_script():
     {"hub": {"url": "wss://elsewhere.example/hub"}},
     {"hub": {"url": "//elsewhere.example/hub"}},
     {"brand": {"logo_url": "https://elsewhere.example/logo.png"}},
+    {"brand": {"name": "x", "share_image": "/site/img/share.png"}},
+    {"brand": {"name": "x", "share_image": "https://x.example/a.png'; return 200"}},
+    {"brand": {"name": "x", "share_description": "line\nbreak"}},
 ])
 def test_values_that_would_break_out_of_nginx_syntax_are_refused(cfg):
     with pytest.raises(ValueError):
@@ -88,7 +134,7 @@ def test_studio_server(tmp_path):
     cfg = {**EXAMPLE, "studio": STUDIO}
     # The public server refuses the studio page; its config.js does not name it.
     public = rc.nginx_server(cfg)
-    assert "location ~ ^/([a-z][a-z]/)?studio(/|$) { return 404; }" in public
+    assert "studio(/|$) { return 404; }" in public
     assert '"studio"' not in rc.frontend_config(cfg)
     # The studio's config.js: the same values, and the flag that registers /studio.
     data = json.loads(rc.frontend_config(cfg, studio=True).removeprefix("window.__LAB_CONFIG__ = ").rstrip(";\n"))

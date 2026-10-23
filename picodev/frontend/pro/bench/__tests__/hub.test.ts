@@ -5,6 +5,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fakeProbe } from '../engine/__tests__/fakeProbe';
 import type { SetupSheet } from '../types';
+import type { BoardPins } from '../wiring';
 
 class FakeSocket {
   static OPEN = 1;
@@ -178,6 +179,34 @@ describe('bench hub client, owner', () => {
 
     link.close();
     expect(fake.listenerCount()).toBe(0);
+  });
+
+  it('sends a burst over the next messages and coalesces a flood, dropping nothing', async () => {
+    const { startOwner } = await import('../hub');
+    const fake = fakeProbe();
+    startOwner(sheet, 'free', fake.probe, hooks());
+    await vi.runOnlyPendingTimersAsync();
+    const ws = FakeSocket.all[0];
+    ws.accept();
+    const sent = () => ws.ofType('events').map((m) => m.events as Array<{ t: number; v: unknown }>);
+
+    for (let i = 0; i < 1000; i++) fake.pin(2, i % 2 === 0, i);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(sent().map((e) => e.length)).toEqual([400]);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(sent().map((e) => e.length)).toEqual([400, 400, 200]);
+    expect(sent().flat().map((e) => e.t)).toEqual(Array.from({ length: 1000 }, (_, i) => i));
+
+    // More than a second of messages at once: the last level and every serial character get through.
+    fake.serial('a', 2000);
+    for (let i = 0; i < 5000; i++) fake.pin(2, i % 2 === 1, 2001 + i);
+    fake.serial('b', 9000);
+    await vi.advanceTimersByTimeAsync(1000);
+    const flood = sent().slice(3);
+    expect(flood.length).toBeLessThan(10); // within the second, not 5000 / 400
+    expect(flood.every((e) => e.length <= 400)).toBe(true);
+    expect(flood.flat().filter((e) => typeof e.v === 'string').map((e) => e.v).join('')).toBe('ab');
+    expect(flood.flat().filter((e) => typeof e.v === 'number').at(-1)).toEqual({ t: 7000, k: 'pin', pin: 2, v: 1 });
   });
 
   it('applies push, reports agent calls and viewers, ignores a bad push', async () => {
@@ -822,6 +851,14 @@ describe('bench hub client, circuit (v0.8)', () => {
   });
 });
 
+/** A board's pins as the page builds them: `count` numbered pins, `adc` converter inputs from `first`. */
+const board = (count: number, first: number, adc: number): BoardPins => ({
+  number: () => null,
+  pins: Array.from({ length: count }, (_, i) => i),
+  adc: new Map(Array.from({ length: adc }, (_, ch) => [first + ch, ch])),
+});
+const NANO = board(22, 14, 8);
+
 describe('bench hub client, analog capture (v0.8)', () => {
   /** A simulator whose clock moves only when the test says so; clock events fire in order. */
   function fakeSim() {
@@ -849,12 +886,12 @@ describe('bench hub client, analog capture (v0.8)', () => {
       },
     };
   }
-  async function owner(withSim = true) {
+  async function owner(withSim = true, pins = NANO) {
     const { startOwner } = await import('../hub');
     const fake = fakeProbe();
     const sim = fakeSim();
     let running = true;
-    const link = startOwner(sheet, 'free', fake.probe, { ...hooks(), state: () => ({ ...state, running }), ...(withSim && { sim: () => sim.sim }) });
+    const link = startOwner(sheet, 'free', fake.probe, { ...hooks(), state: () => ({ ...state, running }), ...(withSim && { sim: () => sim.sim, board: pins }) });
     await vi.runOnlyPendingTimersAsync();
     const ws = FakeSocket.all.at(-1)!;
     ws.accept();
@@ -899,6 +936,16 @@ describe('bench hub client, analog capture (v0.8)', () => {
     const rows = chunks.flatMap((c) => c.samples as number[][]);
     expect(rows).toHaveLength(50_000);
     expect(rows.every((r) => r.length === 4 && r.every((v) => v === 4987))).toBe(true);
+  });
+
+  it('samples a Mega by its numbers: A0 is 54, on channel 0; 14 is a digital pin there', async () => {
+    const { fake, sim, ws } = await owner(true, board(70, 54, 16));
+    sim.adc.channelValues[0] = 3.3;
+    fake.pin(14, true, 0);
+    ws.deliver({ type: 'analog_start', capture: 'm', pins: [54, 14], duration_ms: 1, rate_hz: 1000 });
+    expect(ws.ofType('analog_chunk')).toEqual([{ type: 'analog_chunk', capture: 'm', seq: 0, t0_ms: 0, samples: [[3300, 5000]], last: true }]);
+    ws.deliver({ type: 'analog_start', capture: 'out', pins: [70], duration_ms: 1, rate_hz: 1000 });
+    expect(ws.ofType('capture_error')).toEqual([{ type: 'capture_error', capture: 'out', detail: expect.stringContaining('Invalid pins') }]);
   });
 
   it('refuses a capture it cannot take', async () => {
@@ -978,7 +1025,7 @@ describe('bench hub client, session clock and pause (v0.12)', () => {
       fake.advance(ms);
     };
     const clock = { t_ms: 0, speed: 1, paused: false };
-    const link = startOwner(sheet, 'free', fake.probe, { ...hooks(), state: () => ({ ...state, running: true, clock: { ...clock, t_ms: Math.round(fake.probe.nowMs()) } }), sim: () => sim }, recorder);
+    const link = startOwner(sheet, 'free', fake.probe, { ...hooks(), state: () => ({ ...state, running: true, clock: { ...clock, t_ms: Math.round(fake.probe.nowMs()) } }), sim: () => sim, board: NANO }, recorder);
     await vi.runOnlyPendingTimersAsync();
     const ws = FakeSocket.all.at(-1)!;
     ws.accept();
@@ -1119,5 +1166,123 @@ describe('compile message', () => {
       expect(msg.log.endsWith('THE END')).toBe(true);
     }
     expect(compileMessage(false, 'short', undefined, 'cloud')).toEqual({ type: 'compile', ok: false, log: 'short', origin: 'cloud' });
+  });
+});
+
+describe('bench hub client, v0.20', () => {
+  async function owner(extra: object = {}) {
+    const { startOwner } = await import('../hub');
+    const h = { ...hooks(), offers: vi.fn(), benchCapture: vi.fn(), queue: vi.fn(), ...extra };
+    const link = startOwner(sheet, 'free', fakeProbe().probe, h);
+    await vi.runOnlyPendingTimersAsync();
+    const ws = FakeSocket.all[0];
+    ws.accept();
+    return { link, ws, h };
+  }
+
+  it('follows the benches the hub pushes, filtered as GET /benches', async () => {
+    const { ws, h } = await owner();
+    ws.deliver({
+      type: 'benches',
+      benches: [
+        { kind: 'real', benches: 1, free: 1, waiting: 0, status: 'open' },
+        { kind: 'sim', benches: 0, free: 0, waiting: 0, status: 'open' }, // none connected
+        { kind: 'soon-one', benches: 0, free: 0, waiting: 0, status: 'soon' },
+        { kind: 'BAD', benches: 1, free: 1, waiting: 0 },
+      ],
+    });
+    ws.deliver({ type: 'benches', benches: [] });
+    ws.deliver({ type: 'benches' }); // malformed: no bench
+    expect(h.offers.mock.calls).toEqual([
+      [
+        [
+          { setup: 'setup-a', kind: 'real', benches: 1, free: 1, waiting: 0, status: 'open' },
+          { setup: 'setup-a', kind: 'soon-one', benches: 0, free: 0, waiting: 0, status: 'soon' },
+        ],
+      ],
+      [[]],
+      [[]],
+    ]);
+  });
+
+  it('asks the bench for a capture and puts the relayed chunks together', async () => {
+    const { link, ws, h } = await owner();
+    expect(link.requestCapture([2, 6], 50)).toBe(true);
+    expect(ws.ofType('capture_request')).toEqual([{ type: 'capture_request', pins: [2, 6], duration_ms: 50 }]);
+
+    ws.deliver({ type: 'capture_chunk', capture: 'b1', seq: 0, initial: { 2: 0, 6: 1 }, t0_ms: 7, edges: [[100, 2, 1]], last: false });
+    ws.deliver({ type: 'capture_chunk', capture: 'b1', seq: 2, edges: [[150, 2, 0]], last: true }); // a gap: ignored
+    ws.deliver({ type: 'capture_chunk', capture: 'b1', seq: 1, edges: [[200, 6, 0]], last: true });
+    expect(h.benchCapture.mock.calls).toEqual([
+      [{ phase: 'waiting' }],
+      [{ phase: 'done', rec: { pins: [2, 6], durationMs: 50, initial: { 2: 0, 6: 1 }, t0Ms: 7, edges: [[100, 2, 1], [200, 6, 0]] } }],
+    ]);
+
+    // The agent's capture, not asked here: the window ends at the last edge.
+    ws.deliver({ type: 'capture_chunk', capture: 'b2', seq: 0, initial: { 2: 0 }, edges: [[2500, 2, 1]], last: true });
+    expect(h.benchCapture.mock.calls[2][0]).toMatchObject({ phase: 'done', rec: { durationMs: 3, t0Ms: 0 } });
+    ws.deliver({ type: 'capture_chunk', capture: 'b3', seq: 0, initial: { 2: 0 }, edges: [[1.5, 2, 1]], last: true }); // malformed edge
+    ws.deliver({ type: 'capture_error', capture: 'b3', detail: 'Logic analyser: gone.' });
+    expect(h.benchCapture.mock.calls.slice(3)).toEqual([[{ phase: 'failed' }]]);
+
+    // The hub relays the window on the first chunk: it wins over the duration asked and the last edge.
+    link.requestCapture([2], 50);
+    ws.deliver({ type: 'capture_chunk', capture: 'b4', seq: 0, initial: { 2: 0 }, duration_ms: 200, edges: [[2500, 2, 1]], last: true });
+    expect(h.benchCapture.mock.calls[4][0]).toMatchObject({ phase: 'done', rec: { durationMs: 200 } });
+    ws.deliver({ type: 'capture_chunk', capture: 'b5', seq: 0, initial: { 2: 0 }, duration_ms: -1, edges: [[2500, 2, 1]], last: true });
+    expect(h.benchCapture.mock.calls[5][0]).toMatchObject({ phase: 'done', rec: { durationMs: 3 } }); // malformed: the fallback
+
+    ws.drop(1006);
+    expect(link.requestCapture([2], 50)).toBe(false);
+  });
+
+  it('writes an error reply to the console, and passes on a refused capture request without its detail', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { ws, h } = await owner();
+    ws.deliver({ type: 'error', code: 'busy', ref: 'capture_request', detail: 'A capture is recording.' });
+    expect(warn).toHaveBeenCalledWith('bench: the hub refused a message,', 'busy', 'capture_request', 'A capture is recording.');
+    ws.deliver({ type: 'error', code: 'refused', ref: 'capture_request', detail: 'Not during a turn.' });
+    ws.deliver({ type: 'error', code: 'rate', ref: 'capture_request' });
+    ws.deliver({ type: 'error', code: 'invalid', ref: 'events' });
+    expect(h.queue).not.toHaveBeenCalled();
+    expect(h.benchCapture.mock.calls).toEqual([[{ phase: 'refused', why: 'busy' }], [{ phase: 'refused', why: 'refused' }], [{ phase: 'refused', why: 'other' }]]);
+    warn.mockRestore();
+  });
+
+  it('keeps the hls path of a turn on this origin only', async () => {
+    const { queueMessage, queueView } = await import('../hub');
+    expect(queueMessage({ type: 'turn', kind: 'real', ends_at: 5, video: '/video/3/whep', hls: '/video/3/index.m3u8' })).toEqual({
+      type: 'turn', kind: 'real', ends_at: 5, video: '/video/3/whep', hls: '/video/3/index.m3u8',
+    });
+    expect(queueMessage({ type: 'turn', kind: 'real', ends_at: 5, hls: '//evil.example/x.m3u8' })).toEqual({ type: 'turn', kind: 'real', ends_at: 5 });
+    expect(queueView({ phase: 'none' }, { type: 'turn', kind: 'real', ends_at: 5, hls: '/video/3/index.m3u8' })).toMatchObject({ hls: '/video/3/index.m3u8' });
+  });
+
+  it('adds the signed share to the end page, without the hub path, encoded', async () => {
+    const { withShare } = await import('../hub');
+    const info = { session: 'abc123', owner: 'OWNER' };
+    const href = '/fin?setup=setup-a&mode=challenge&level=2&t=90';
+    const answer = (share: unknown) => fetchMock.mockResolvedValueOnce({ ok: true, json: async () => ({ session: 'abc123', share }) });
+
+    answer('/p/setup-a.challenge.2.90.AbCdEfGhIjKl-_09');
+    expect(await withShare(href, info)).toBe(`${href}&share=setup-a.challenge.2.90.AbCdEfGhIjKl-_09`);
+    expect(fetchMock).toHaveBeenLastCalledWith('/hub/sessions/abc123', expect.objectContaining({ headers: { Authorization: 'Bearer OWNER' } }));
+    answer('/en/p/setup-a.free.0.5.AbCdEfGhIjKl-_09');
+    expect(await withShare(href, info)).toBe(`${href}&share=setup-a.free.0.5.AbCdEfGhIjKl-_09`);
+    answer('/p/a b&c=d');
+    expect(await withShare('/fin', info)).toBe('/fin?share=a%20b%26c%3Dd');
+
+    answer(undefined);
+    expect(await withShare(href, info)).toBe(href);
+    answer('/p/');
+    expect(await withShare(href, info)).toBe(href);
+    fetchMock.mockResolvedValueOnce({ ok: false, status: 404, json: async () => ({}) });
+    expect(await withShare(href, info)).toBe(href);
+    fetchMock.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    expect(await withShare(href, info)).toBe(href);
+    const calls = fetchMock.mock.calls.length;
+    expect(await withShare(href, null)).toBe(href);
+    expect(await withShare(href, { session: 'abc123' })).toBe(href); // no owner token
+    expect(fetchMock.mock.calls.length).toBe(calls);
   });
 });

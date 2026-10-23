@@ -59,7 +59,10 @@ COPY picodev/docker/nginx.conf /etc/nginx/conf.d/default.conf
 COPY picodev/docker/nginx-app.conf /etc/nginx/lab-app.conf
 COPY --from=frontend /app/frontend/dist /usr/share/nginx/html
 COPY picodev/docker/entrypoint.sh picodev/docker/render_config.py picodev/docker/logging.json /app/
-RUN chmod +x /app/entrypoint.sh
+COPY picodev/docker/externalize_scripts.py /tmp/
+# No inline script left in the pages: a CSP "script-src 'self'" needs no hash.
+RUN chmod +x /app/entrypoint.sh \
+ && python /tmp/externalize_scripts.py /usr/share/nginx/html && rm /tmp/externalize_scripts.py
 
 ENV VELXIO_NEWS=off \
     VELXIO_COMPILE_TIMEOUT=60 \

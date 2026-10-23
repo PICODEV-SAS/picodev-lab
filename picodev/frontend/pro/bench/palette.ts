@@ -18,14 +18,11 @@ export function probeMarks(probes: Probe[]): Array<Probe & { color: string }> {
   return probes.map((p) => ({ ...p, color: probeColor(p.kind, seen[p.kind]++) }));
 }
 
-/**
- * The name a board's `pinInfo` gives an Arduino pin number: "9", or "D9",
- * or "A0" for 14 and up (Uno, Nano). Null when the board has no such pin.
- * ponytail: Uno/Nano numbering; a Mega's A0 (54) is found only if its pinInfo says "54".
- */
-export function pinName(pin: number, names: string[]): string | null {
-  return [String(pin), `D${pin}`, pin >= 14 ? `A${pin - 14}` : ''].find((n) => n && names.includes(n)) ?? null;
-}
+/** A point through an SVG matrix (a b c d e f), rounded to the pixel. */
+export const toView = (m: { a: number; b: number; c: number; d: number; e: number; f: number }, x: number, y: number) => ({
+  x: Math.round(m.a * x + m.c * y + m.e),
+  y: Math.round(m.b * x + m.d * y + m.f),
+});
 
 /** The width a mark's label takes, in px (11 px mono, 6 px padding each side). */
 export const labelWidth = (label: string) => label.length * 7 + 14;

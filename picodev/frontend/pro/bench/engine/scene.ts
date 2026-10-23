@@ -50,14 +50,11 @@ function ratio(value: number, min: number, max: number): number {
 
 /**
  * What a binding does to its element. `visible` and `fill` take a source as
- * "high" when its value is above 0. Transforms are appended to the transform
- * the element already has, so `origin`, `dx` and `dy` are in the element's own
- * coordinates.
+ * "high" when its value is above 0. A transform goes after the transform the
+ * element already has and after those of the bindings listed before it on the
+ * same element, so `origin`, `dx` and `dy` are in the coordinates those leave.
  */
-function effect(el: SVGElement, b: SceneBinding): { apply(value: number): void; stop(): void } {
-  // ponytail: one transform binding per element (the last one wins); nest <g> in the SVG to combine two.
-  const base = el.getAttribute('transform') ?? '';
-  const setTransform = (t: string) => el.setAttribute('transform', `${base} ${t}`.trim());
+function effect(el: SVGElement, b: SceneBinding, setTransform: (t: string) => void): { apply(value: number): void; stop(): void } {
   const stop = () => {};
   switch (b.effect) {
     case 'visible':
@@ -149,6 +146,8 @@ export function mountScene(
 
   const cleanups: Array<() => void> = [];
   const warned = new Set<string>();
+  // Per element: the transform of the SVG, then one slot per transform binding, in order.
+  const transforms = new Map<Element, string[]>();
   for (const b of bindings) {
     const el = byId.get(b.target);
     if (!el) {
@@ -156,7 +155,14 @@ export function mountScene(
       warned.add(b.target);
       continue;
     }
-    const { apply, stop } = effect(el as SVGElement, b);
+    if (!transforms.has(el)) transforms.set(el, [el.getAttribute('transform') ?? '']);
+    const parts = transforms.get(el)!;
+    const slot = parts.push('') - 1;
+    const setTransform = (t: string) => {
+      parts[slot] = t;
+      el.setAttribute('transform', parts.filter(Boolean).join(' '));
+    };
+    const { apply, stop } = effect(el as SVGElement, b, setTransform);
     apply(0);
     cleanups.push(watchSource(probe, b.source, apply), stop);
   }

@@ -18,22 +18,41 @@ export interface PlainWire {
   waypoints?: Array<{ x: number; y: number }>;
 }
 
-/** The Arduino number of a board pin's name: "9" and "D9" are 9, "A0" is 14 (Uno, Nano). Null for GND, 5V… */
-export function pinNumber(name: string): number | null {
-  const m = /^(D|A)?(\d+)$/.exec(name);
-  if (!m) return null;
-  const n = Number(m[2]);
-  return m[1] === 'A' ? n + 14 : n;
+/**
+ * A board's pins as its simulator numbers them (Velxio's PinManager: "A0" is
+ * 14 on an Uno or a Nano, 54 on a Mega). The page builds it from Velxio's own
+ * mapping (utils/boardPinMapping.ts), so every board Velxio wires is right.
+ */
+export interface BoardPins {
+  /** The number of a pin's name; null or negative for GND, 5V… */
+  number(name: string): number | null;
+  /** Every numbered pin of the board, ascending. */
+  pins: number[];
+  /** The converter channel of each analog input, by pin number. */
+  adc: Map<number, number>;
+}
+
+/** `names`: the board's pin names; `adcInputs`: its converter inputs by name (Velxio's ADC_PIN_MAP). */
+export function boardPins(names: string[], number: (name: string) => number | null, adcInputs: Array<{ pinName: string; channel: number }>): BoardPins {
+  const numbered = (name: string) => {
+    const n = number(name);
+    return n !== null && n >= 0 ? [n] : [];
+  };
+  return {
+    number,
+    pins: [...new Set(names.flatMap(numbered))].sort((a, b) => a - b),
+    adc: new Map(adcInputs.flatMap(({ pinName, channel }) => numbered(pinName).map((n) => [n, channel] as const))),
+  };
 }
 
 /** The end of a wire away from the board, and the wire, for each wire on the board's `pin`. */
-export function wiresOn(pin: number, wires: PlainWire[], boardId: string): Array<{ wire: PlainWire; far: WireEnd }> {
+export function wiresOn(pin: number, wires: PlainWire[], boardId: string, number: BoardPins['number']): Array<{ wire: PlainWire; far: WireEnd }> {
   return wires.flatMap((wire) => {
     const ends = [
       [wire.start, wire.end],
       [wire.end, wire.start],
     ] as const;
-    const hit = ends.find(([near, far]) => near.componentId === boardId && far.componentId !== boardId && pinNumber(near.pinName) === pin);
+    const hit = ends.find(([near, far]) => near.componentId === boardId && far.componentId !== boardId && number(near.pinName) === pin);
     return hit ? [{ wire, far: hit[1] }] : [];
   });
 }
@@ -43,15 +62,15 @@ export function wiresOn(pin: number, wires: PlainWire[], boardId: string): Array
  * one of the part's pins to a numbered board pin). Wired through another
  * part, a pushbutton is not found.
  */
-export function boardPinOf(parts: string[], wires: PlainWire[], boardId: string): Map<string, number> {
+export function boardPinOf(parts: string[], wires: PlainWire[], boardId: string, number: BoardPins['number']): Map<string, number> {
   const found = new Map<string, number>();
   for (const w of wires) {
     for (const [near, far] of [
       [w.start, w.end],
       [w.end, w.start],
     ] as const) {
-      const pin = near.componentId === boardId ? pinNumber(near.pinName) : null;
-      if (pin !== null && parts.includes(far.componentId) && !found.has(far.componentId)) found.set(far.componentId, pin);
+      const pin = near.componentId === boardId ? number(near.pinName) : null;
+      if (pin !== null && pin >= 0 && parts.includes(far.componentId) && !found.has(far.componentId)) found.set(far.componentId, pin);
     }
   }
   return found;

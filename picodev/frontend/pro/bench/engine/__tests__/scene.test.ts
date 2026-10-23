@@ -199,6 +199,25 @@ describe('mountScene: bindings', () => {
     expect(container.querySelector('#door')!.getAttribute('transform')).toBe('translate(20 -5)');
   });
 
+  it('composes the transforms of several bindings on one element, in their order', () => {
+    const p = f();
+    mountScene(
+      container,
+      svg('<g id="arm" transform="scale(2)"/>'),
+      [
+        { target: 'arm', source: 'servo:9', effect: 'translate', min: 0, max: 100, dx: 40, dy: 0 },
+        { target: 'arm', source: 'servo:10', effect: 'rotate', min: 0, max: 180, from: 0, to: 180, origin: [1, 2] },
+      ],
+      p.probe,
+    );
+    const t = () => container.querySelector('#arm')!.getAttribute('transform');
+    expect(t()).toBe('scale(2) translate(0 0) rotate(0 1 2)');
+    p.servo(10, 90);
+    expect(t()).toBe('scale(2) translate(0 0) rotate(90 1 2)');
+    p.servo(9, 50); // the rotation is kept
+    expect(t()).toBe('scale(2) translate(20 0) rotate(90 1 2)');
+  });
+
   it('spins with animation frames only while above the threshold', () => {
     const frames = new Map<number, FrameRequestCallback>();
     let id = 0;

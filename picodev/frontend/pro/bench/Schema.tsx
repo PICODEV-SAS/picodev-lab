@@ -10,18 +10,27 @@
  *
  * Over it, the sheet's probes, in the colours of their traces: the wires of a
  * probed pin drawn again in its colour, a ring or a square at the board's pin
- * (its `pinInfo`), the label at the far end of the wire, where the part is.
+ * (where Velxio ends a wire on it), the label at the far end of the wire,
+ * where the part is.
  * A pushbutton wired to a board pin is drawn pressed while the pin is low, so
  * a press the bench makes (a coupling) shows as it does on the scene.
+ *
+ * The spectator page shows it too (SpectatorSchema, loaded on demand): the
+ * session's circuit put into Velxio's store, a picture that nothing simulates.
  */
-import { useEffect, useRef, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { SimulatorCanvas } from '@velxio/components/simulator/SimulatorCanvas';
-import { useSimulatorStore } from '@velxio/store/useSimulatorStore';
+import { DEFAULT_BOARD_POSITION, useSimulatorStore } from '@velxio/store/useSimulatorStore';
+import type { BoardKind } from '@velxio/types/board';
+import { boardPinToNumber, isBoardComponent } from '@velxio/utils/boardPinMapping';
+import { calculatePinPosition } from '@velxio/utils/pinPositionCalculator';
+import { isBoardComponentType, stripBrandPrefix } from '@velxio/utils/exampleToBuildNetlistInput';
 import { generateOrthogonalPath } from '@velxio/utils/wireUtils';
-import { pinName, probeMarks, stagger } from './palette';
+import type { PushedCircuit } from './circuit';
+import { probeMarks, stagger, toView } from './palette';
 import { text } from './text';
 import type { BenchProbe, SetupSheet } from './types';
-import { boardPinOf, wiresOn, type PlainWire } from './wiring';
+import { boardPinOf, wiresOn, type BoardPins, type PlainWire } from './wiring';
 
 type Probe = ReturnType<typeof probeMarks>[number];
 type Mark = Probe & { x: number; y: number; row: number; labelled: boolean };
@@ -41,6 +50,8 @@ const BUTTONS = ['pushbutton', 'pushbutton-6mm'];
 
 interface Props {
   boardId: string;
+  /** Only the numbering is read: the spectator page has no simulator to list the pins. */
+  board: Pick<BoardPins, 'number'>;
   probes: SetupSheet['probes'];
   probe: BenchProbe;
   running: boolean;
@@ -48,7 +59,7 @@ interface Props {
   hidden: boolean;
 }
 
-export function Schema({ boardId, probes, probe, running, editable, hidden }: Props) {
+export function Schema({ boardId, board, probes, probe, running, editable, hidden }: Props) {
   const view = useRef<HTMLDivElement>(null);
   const surface = useRef<HTMLDivElement>(null);
   const [header, setHeader] = useState<HTMLElement | null>(null);
@@ -67,7 +78,7 @@ export function Schema({ boardId, probes, probe, running, editable, hidden }: Pr
       } else if (!scaleToFit(v, s)) return;
       s.style.opacity = '1';
       setOverlay((old) => {
-        const next = place(v, s, boardId, probes, useSimulatorStore.getState().wires as PlainWire[]);
+        const next = place(v, s, boardId, board, probes, useSimulatorStore.getState().wires as PlainWire[]);
         return JSON.stringify(next) === JSON.stringify(old) ? old : next;
       });
     };
@@ -88,12 +99,12 @@ export function Schema({ boardId, probes, probe, running, editable, hidden }: Pr
       resized.disconnect();
       moved.disconnect();
     };
-  }, [header, boardId, probes, editable, wires]);
+  }, [header, boardId, board, probes, editable, wires]);
 
   // A pushbutton follows its pin: what presses it (the visitor, a coupling of the bench) shows.
   useEffect(() => {
     const ids = components.filter((c) => BUTTONS.includes(c.metadataId)).map((c) => c.id);
-    const pins = boardPinOf(ids, wires, boardId);
+    const pins = boardPinOf(ids, wires, boardId, board.number);
     const press = (id: string, pressed: boolean) => {
       const el = surface.current?.querySelector(`[id="${CSS.escape(id)}"]`) as (HTMLElement & { pressed?: boolean }) | null;
       if (el && el.pressed !== pressed) el.pressed = pressed;
@@ -104,7 +115,7 @@ export function Schema({ boardId, probes, probe, running, editable, hidden }: Pr
     }
     const offs = [...pins].map(([id, pin]) => probe.onPin(pin, (high) => press(id, !high)));
     return () => offs.forEach((off) => off());
-  }, [components, wires, boardId, probe, running]);
+  }, [components, wires, boardId, board, probe, running]);
 
   return (
     <div ref={view} className="bench-schema" data-theme="light" data-editable={editable ? '' : undefined} role={editable ? undefined : 'img'} aria-label={t.schemaAria} hidden={hidden}>
@@ -162,30 +173,56 @@ function scaleToFit(v: HTMLElement, s: HTMLElement): boolean {
 }
 
 /** Where each probe is in the view, now; a pin the board does not name is not marked. */
-function place(v: HTMLElement, s: HTMLElement, boardId: string, probes: SetupSheet['probes'], wires: PlainWire[]): Overlay {
-  const board = s.querySelector<HTMLElement>(`[id="${CSS.escape(boardId)}"]`);
-  const info = (board as { pinInfo?: Array<{ name: string; x: number; y: number }> } | null)?.pinInfo;
-  if (!board || !Array.isArray(info) || !board.offsetWidth) return NONE;
-  const r = board.getBoundingClientRect();
-  const o = v.getBoundingClientRect();
-  const k = r.width / board.offsetWidth; // the canvas's zoom and ours; ponytail: a rotated board is not handled
-  const names = info.map((p) => p.name);
-  // The wires' coordinates are the canvas's world: its wire layer maps them to the screen.
+function place(v: HTMLElement, s: HTMLElement, boardId: string, board: Props['board'], probes: SetupSheet['probes'], wires: PlainWire[]): Overlay {
+  const el = s.querySelector<HTMLElement>(`[id="${CSS.escape(boardId)}"]`);
+  const info = (el as { pinInfo?: Array<{ name: string }> } | null)?.pinInfo;
+  const at = useSimulatorStore.getState().boards.find((b) => b.id === boardId);
+  // Everything is placed in the canvas's world (wire coordinates), which its
+  // wire layer maps to the screen: the canvas's zoom and pan, ours, a rotation.
   const ctm = s.querySelector<SVGSVGElement>('svg.wire-layer')?.getScreenCTM() ?? null;
-  const toView = (x: number, y: number) => (ctm ? { x: Math.round(ctm.a * x + ctm.c * y + ctm.e - o.left), y: Math.round(ctm.b * x + ctm.d * y + ctm.f - o.top) } : null);
+  if (!el || !Array.isArray(info) || !at || !ctm) return NONE;
+  const o = v.getBoundingClientRect();
+  const mx = { a: ctm.a, b: ctm.b, c: ctm.c, d: ctm.d, e: ctm.e - o.left, f: ctm.f - o.top };
   const out: Overlay = { ...NONE, marks: [], labels: [], wires: [] };
-  if (ctm) out.matrix = `matrix(${[ctm.a, ctm.b, ctm.c, ctm.d, ctm.e - o.left, ctm.f - o.top].map((n) => +n.toFixed(3)).join(' ')})`;
-  const marks = probeMarks(probes).flatMap((m) => {
-    const name = pinName(m.pin, names);
-    const pin = name === null ? undefined : info.find((p) => p.name === name);
+  out.matrix = `matrix(${[mx.a, mx.b, mx.c, mx.d, mx.e, mx.f].map((n) => +n.toFixed(3)).join(' ')})`;
+  const marks = probeMarks(probes).flatMap((p) => {
+    const name = info.find((i) => board.number(i.name) === p.pin)?.name;
+    // Where Velxio ends a wire on that pin (utils/pinPositionCalculator.ts).
+    const pin = name === undefined ? null : calculatePinPosition(boardId, name, at.x, at.y);
     if (!pin) return [];
-    const on = ctm ? wiresOn(m.pin, wires, boardId) : [];
-    on.forEach(({ wire }) => out.wires.push({ key: `${m.pin}-${wire.id}`, color: m.color, d: generateOrthogonalPath(wire.start, wire.waypoints ?? [], wire.end) }));
+    const on = wiresOn(p.pin, wires, boardId, board.number);
+    on.forEach(({ wire }) => out.wires.push({ key: `${p.pin}-${wire.id}`, color: p.color, d: generateOrthogonalPath(wire.start, wire.waypoints ?? [], wire.end) }));
     // The label where the wire ends on a part; the farthest end when the pin has several.
-    const far = on.map(({ far }) => toView(far.x, far.y)!).sort((a, b) => b.x - a.x)[0];
-    if (far) out.labels.push({ ...m, ...far });
-    return [{ ...m, labelled: !!far, x: Math.round(r.left - o.left + pin.x * k), y: Math.round(r.top - o.top + pin.y * k) }];
+    const far = on.map(({ far }) => toView(mx, far.x, far.y)).sort((a, b) => b.x - a.x)[0];
+    if (far) out.labels.push({ ...p, ...far });
+    return [{ ...p, labelled: !!far, ...toView(mx, pin.x, pin.y) }];
   });
   out.marks = stagger(marks.filter((m) => !m.labelled)).concat(marks.filter((m) => m.labelled).map((m) => ({ ...m, row: 0 })));
   return out;
+}
+
+/**
+ * The schema of the spectator page: `circuit` (the session's, or the sheet's)
+ * on a board of `kind`, as loadExample would put it, and Schema read-only over it.
+ */
+export function SpectatorSchema({ kind, circuit, ...props }: Omit<Props, 'boardId' | 'board' | 'editable'> & { kind: string; circuit: PushedCircuit }) {
+  const key = JSON.stringify(circuit); // a new state carries an equal circuit most of the time
+  useEffect(() => {
+    const sim = useSimulatorStore.getState();
+    sim.boards.forEach((b) => sim.removeBoard(b.id));
+    // The id loadExample gives the only board, so the owner's wire ends name it already.
+    const id = sim.addBoard(kind as BoardKind, DEFAULT_BOARD_POSITION.x, DEFAULT_BOARD_POSITION.y, kind);
+    sim.setActiveBoardId(id);
+    const end = (e: PushedCircuit['wires'][number]['start']) => ({ ...e, componentId: isBoardComponent(e.componentId) ? id : e.componentId, x: 0, y: 0 });
+    sim.setComponents(
+      circuit.components
+        .filter((c) => !isBoardComponentType(c.type))
+        .map((c) => ({ id: c.id, metadataId: stripBrandPrefix(c.type), x: c.x ?? 0, y: c.y ?? 0, properties: c.properties })),
+    );
+    sim.setWires(circuit.wires.map((w) => ({ id: w.id, start: end(w.start), end: end(w.end), color: w.color, waypoints: [] })));
+    sim.recalculateAllWirePositions();
+  }, [kind, key]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Velxio's numbering of the board, as the bench page's (BenchPage boardPins).
+  const board = useMemo(() => ({ number: (name: string) => boardPinToNumber(kind, name) }), [kind]);
+  return <Schema boardId={kind} board={board} editable={false} {...props} />;
 }

@@ -22,7 +22,9 @@ import { loadExample } from '@velxio/utils/loadExample';
 import { circuitOf } from '../bench/circuit';
 import { SETUPS_URL } from '../bench/config';
 import { getLang, setLang } from '../bench/lang';
+import { Bindings } from './Bindings';
 import {
+  adminHeaders,
   draftFromSheet,
   dropDraft,
   fieldOf,
@@ -30,9 +32,11 @@ import {
   ID_RE,
   levelIds,
   loadDraft,
+  loadToken,
   newDraft,
   parseRest,
   saveDraft,
+  saveToken,
   sceneIds,
   sheetFqbn,
   tryMode,
@@ -123,9 +127,9 @@ async function readSheet(id: string): Promise<StudioDraft> {
   return draftFromSheet(sheet, scene);
 }
 
-/** One of the three back-office requests, on this origin (the studio server relays them to the hub). */
-async function admin(name: 'setup-check' | 'setup-zip' | 'setup-try', body: object): Promise<Response> {
-  return fetch(`/admin/api/${name}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+/** One of the three back-office requests, on this origin (the studio server relays them, Authorization included, to the hub). */
+async function admin(name: 'setup-check' | 'setup-zip' | 'setup-try', body: object, token: string): Promise<Response> {
+  return fetch(`/admin/api/${name}`, { method: 'POST', headers: adminHeaders(token), body: JSON.stringify(body) });
 }
 
 const strings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((s): s is string => typeof s === 'string') : []);
@@ -141,6 +145,7 @@ function StudioPanel({ open, setOpen }: { open: boolean; setOpen(open: boolean):
   const [outcome, setOutcome] = useState<Outcome>(null);
   const [tryLevel, setTryLevel] = useState(0);
   const [boards, setBoards] = useState(1);
+  const [token, setToken] = useState(loadToken);
   const types = useRef(new Map<string, string>());
 
   useEffect(() => {
@@ -266,7 +271,7 @@ function StudioPanel({ open, setOpen }: { open: boolean; setOpen(open: boolean):
 
   const check = () =>
     request(t.check, async (files) => {
-      const res = await admin('setup-check', { files });
+      const res = await admin('setup-check', { files }, token);
       if (!res.ok) return refusal(res);
       const body = (await res.json()) as { ok?: unknown; problems?: unknown };
       const listed = strings(body.problems);
@@ -277,7 +282,7 @@ function StudioPanel({ open, setOpen }: { open: boolean; setOpen(open: boolean):
   const tryIt = () =>
     request(t.try, async (files) => {
       const mode = tryMode(draft!);
-      const res = await admin('setup-try', { files, mode, level: mode === 'challenge' ? tryLevel : 0 });
+      const res = await admin('setup-try', { files, mode, level: mode === 'challenge' ? tryLevel : 0 }, token);
       if (!res.ok) return refusal(res);
       setProblems(null);
       const body = (await res.json()) as { open_url?: unknown; expires_at?: unknown };
@@ -293,7 +298,7 @@ function StudioPanel({ open, setOpen }: { open: boolean; setOpen(open: boolean):
 
   const zip = () =>
     request(t.zip, async (files) => {
-      const res = await admin('setup-zip', { files });
+      const res = await admin('setup-zip', { files }, token);
       if (!res.ok) return refusal(res);
       setProblems(null);
       const name = `${draft!.id}.zip`;
@@ -347,6 +352,21 @@ function StudioPanel({ open, setOpen }: { open: boolean; setOpen(open: boolean):
           ›
         </button>
       </header>
+
+      <label className="studio-field studio-token">
+        <span>{t.token}</span>
+        <input
+          type="password"
+          autoComplete="off"
+          spellCheck={false}
+          value={token}
+          title={t.tokenHint}
+          onChange={(e) => {
+            setToken(e.target.value);
+            saveToken(e.target.value);
+          }}
+        />
+      </label>
 
       {error && <p className="studio-out" data-kind="error" role="alert">{error}</p>}
       {busy && !draft && <p className="studio-out" data-kind="info">{busy}</p>}
@@ -418,6 +438,12 @@ function StudioPanel({ open, setOpen }: { open: boolean; setOpen(open: boolean):
           <Section title={t.sections.scene} problems={byField('scene')}>
             <SceneField svg={draft.scene} onPick={pickScene} onRemove={() => update({ scene: null })} />
           </Section>
+
+          {draft.scene !== null && (
+            <Section title={t.sections.bindings} problems={[]}>
+              <Bindings rest={draft.rest} svg={draft.scene} circuit={draft.circuit} boardKind={draft.board.kind} onRest={(rest) => update({ rest })} />
+            </Section>
+          )}
 
           <Section title={t.sections.sheet} problems={byField('sheet')}>
             <p className="studio-small">{t.sheetHint}</p>

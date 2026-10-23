@@ -205,3 +205,35 @@ export function measure(rec: Omit<Recording, 't0Ms'>, label: (pin: number) => st
   const windowEnd = truncated ? last : end;
   return { truncated, end: windowEnd, channels: rec.pins.map((p, i) => channel(p, label(p), rec.initial[String(p)], times[i], windowEnd)) };
 }
+
+/**
+ * The recording as a Value Change Dump (IEEE 1364), the file PulseView and
+ * GTKWave open: one wire per pin, its level at #0, then every edge, in µs of
+ * simulated time from the start of the recording; the last timestamp is the window's end.
+ */
+export function toVcd(rec: Recording, label: (pin: number) => string): string {
+  const code = (i: number) => String.fromCharCode(33 + i); // '!', '"', '#'…: a few pins at most
+  const index = new Map(rec.pins.map((p, i) => [p, i]));
+  const end = rec.durationMs * 1000;
+  const out = [
+    '$version Picodev Lab $end',
+    '$timescale 1us $end',
+    '$scope module bench $end',
+    ...rec.pins.map((p, i) => `$var wire 1 ${code(i)} ${label(p).replace(/[^A-Za-z0-9_]/g, '_') || `D${p}`} $end`),
+    '$upscope $end',
+    '$enddefinitions $end',
+    '#0',
+    '$dumpvars',
+    ...rec.pins.map((p, i) => `${rec.initial[String(p)] ?? 0}${code(i)}`),
+    '$end',
+  ];
+  let at = 0;
+  for (const [t, pin, v] of rec.edges) {
+    const i = index.get(pin);
+    if (i === undefined || t > end) continue;
+    if (t !== at) out.push(`#${(at = t)}`);
+    out.push(`${v}${code(i)}`);
+  }
+  if (end > at) out.push(`#${end}`);
+  return out.join('\n') + '\n';
+}

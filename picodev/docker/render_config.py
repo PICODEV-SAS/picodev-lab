@@ -18,6 +18,7 @@ configuration are checked against strict patterns first.
 """
 from __future__ import annotations
 
+import html
 import json
 import re
 import sys
@@ -29,10 +30,17 @@ PAGE_RE = re.compile(r"^[a-z0-9\-]+$")
 RATE_RE = re.compile(r"^[0-9]+r/[sm]$")
 # An upstream of the studio server: scheme, host and port only, no path.
 UPSTREAM_RE = re.compile(r"^https?://[A-Za-z0-9.\-]+(:[0-9]{1,5})?$")
+# The image of a shared link: crawlers want an absolute URL.
+IMAGE_RE = re.compile(r"^https://[A-Za-z0-9.\-]+(:[0-9]{1,5})?/[A-Za-z0-9/_.\-]*$")
 # A name server of /etc/resolv.conf (IPv4 or IPv6 literal).
 RESOLVER_RE = re.compile(r"^[0-9A-Fa-f.:]+$")
 # The only back-office requests the studio server relays (architecture v0.18).
 STUDIO_ADMIN = ("setup-check", "setup-zip", "setup-try")
+# The language prefix of a Velxio page: "fr/", "pt-br/", "zh-cn/", "en/" (which the
+# editor redirects), in any case, since React Router matches paths case-insensitively.
+# ponytail: any xx or xx-yy, not frontend/src/i18n/config.ts's list, so a new locale is covered.
+# No braces: nginx would need the regex quoted.
+LOCALE_PREFIX = "([a-z][a-z](-[a-z][a-z])?/)?"
 
 PROXY = """        proxy_pass http://127.0.0.1:8001;
         proxy_set_header Host $host;
@@ -90,6 +98,37 @@ def frontend_config(cfg: dict, studio: bool = False) -> str:
     return "window.__LAB_CONFIG__ = " + data.replace("</", "<\\/") + ";\n"
 
 
+def _text(value: object, what: str) -> str:
+    """Text for an HTML attribute inside an nginx single-quoted string: no quote,
+    no `$` (an nginx variable) nor backslash left, no control character."""
+    if not isinstance(value, str) or not value.strip() or any(ord(c) < 32 for c in value):
+        raise ValueError(f"{what}: {value!r} is not accepted")
+    return html.escape(value.strip(), quote=True).replace("$", "&#36;").replace("\\", "&#92;")
+
+
+def share_filters(cfg: dict) -> str:
+    """With [brand] name: Velxio's Open Graph and Twitter tags (velxio.dev's title
+    and image, on every page) set aside, the instance's added before </head>.
+    Without it, nothing: the pages keep Velxio's."""
+    brand = cfg.get("brand", {})
+    if not brand.get("name"):
+        return ""
+    name = _text(brand["name"], "brand.name")
+    desc = _text(brand["share_description"], "brand.share_description") if "share_description" in brand else None
+    image = _checked(brand["share_image"], IMAGE_RE, "brand.share_image") if "share_image" in brand else None
+    tags = [("property", "og:type", "website"), ("property", "og:site_name", name), ("property", "og:title", name),
+            ("property", "og:description", desc), ("property", "og:image", image),
+            ("name", "twitter:card", "summary_large_image" if image else "summary"), ("name", "twitter:title", name),
+            ("name", "twitter:description", desc), ("name", "twitter:image", image)]
+    meta = "".join(f'<meta {attr}="{key}" content="{value}" />' for attr, key, value in tags if value)
+    return (
+        # Renamed, not removed (sub_filter replaces fixed strings): crawlers ignore a data- attribute.
+        "    sub_filter '<meta property=\"og:' '<meta data-velxio-property=\"og:';\n"
+        "    sub_filter '<meta name=\"twitter:' '<meta data-velxio-name=\"twitter:';\n"
+        f"    sub_filter '</head>' '{meta}</head>';\n"
+    )
+
+
 def nginx_http(cfg: dict) -> str:
     limits = cfg.get("limits", {})
     out = []
@@ -110,19 +149,20 @@ def nginx_server(cfg: dict, studio: bool = False) -> str:
     body = int(limits.get("max_body_bytes", 0))
     # nginx's own default (1m) is too small for a stock instance.
     out.append(f"    client_max_body_size {body if body else '50m'};\n")
+    out.append(share_filters(cfg))
 
     if studio:
         out.append("    location = / { return 302 /studio; }\n")
     elif studio_section(cfg):
         # The studio is a page of the studio server only.
-        out.append("    location ~ ^/([a-z][a-z]/)?studio(/|$) { return 404; }\n")
+        out.append(f"    location ~* ^/{LOCALE_PREFIX}studio(/|$) {{ return 404; }}\n")
     if landing and not studio:
         landing = _checked(landing, PATH_RE, "brand.landing")
         out.append(f"    location = / {{ return 302 {landing}; }}\n")
     pages = [_checked(p, PAGE_RE, "routes.hidden_pages") for p in routes.get("hidden_pages", [])]
     if pages and not studio:
         out.append(
-            f"    location ~ ^/([a-z][a-z]/)?({'|'.join(pages)})(/|$) "
+            f"    location ~* ^/{LOCALE_PREFIX}({'|'.join(pages)})(/|$) "
             f"{{ return 302 {landing or '/'}; }}\n"
         )
     for prefix in routes.get("blocked", []):

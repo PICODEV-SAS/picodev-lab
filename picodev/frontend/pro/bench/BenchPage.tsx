@@ -14,26 +14,29 @@ import { BRAND_NAME } from '@velxio/lib/deploymentConfig';
 import { compileCode, type CompileResult } from '@velxio/services/compilation';
 import registry from '@velxio/services/ComponentRegistry';
 import { claimPartPin, releasePartPins } from '@velxio/simulation/partPinOwnership';
+import { ADC_PIN_MAP } from '@velxio/simulation/spice/connectAnalogInputsToMcu';
 import { startSimulation } from '@velxio/simulation/spice/start';
 import { useEditorStore } from '@velxio/store/useEditorStore';
 import { useOscilloscopeStore } from '@velxio/store/useOscilloscopeStore';
 import { getBoardPinManager, getBoardSimulator, useSimulatorStore } from '@velxio/store/useSimulatorStore';
+import type { BoardKind } from '@velxio/types/board';
+import { boardPinToNumber } from '@velxio/utils/boardPinMapping';
 import { stripBrandPrefix } from '@velxio/utils/exampleToBuildNetlistInput';
 import { loadExample } from '@velxio/utils/loadExample';
 import type { AnalogSim } from './analog';
 import { createRecorder, type Recorder } from './capture';
 import { Camera, ViewSwitch, type View } from './Camera';
 import { CapturePanel } from './CapturePanel';
-import { checkCircuit, circuitOf, placeFree, type Catalogue, type PushedCircuit } from './circuit';
+import { checkCircuit, circuitOf, placeFree, type Catalogue, type PushedCircuit, type Size } from './circuit';
 import { EXIT_URL, HOME_URL, HUB_URL } from './config';
 import { applyCouplings, mountScene, runLevel } from './engine';
 import { Banner, Brand, Footer, LangSwitch, Message, SimClock } from './frame';
-import { fetchBenches, fetchStatus, hubPaused, queueView, SPEEDS, startOwner, type BenchOffer, type HubStatus, type OwnerLink, type SessionInfo } from './hub';
+import { fetchBenches, fetchStatus, hubPaused, queueView, SPEEDS, startOwner, withShare, type BenchCapture, type BenchOffer, type HubStatus, type OwnerLink, type SessionInfo } from './hub';
 import { AgentJournal, QueuePanel, VisibilityMenu, type AgentCall } from './HubControls';
 import { getLang, localizeSheet, localPath } from './lang';
 import { dropZone, Fold, Grip, moveTo, Splitter, step, useLayout, type Column, type Part, type Section } from './layout';
 import { LevelPanel, TestList } from './LevelPanel';
-import { readLevel, saveLevel } from './levelMemory';
+import { endSession, readHints, readLevel, readSpeed, saveHints, saveLevel, saveSpeed, sessionStart } from './levelMemory';
 import { setEditorReadOnly, themeMonaco } from './monaco';
 import { createProbe, type ProbedSim, type SimProbe } from './probe';
 import { Schema } from './Schema';
@@ -41,6 +44,7 @@ import { fetchSetup, toExample, type LoadedSetup } from './sheet';
 import { text } from './text';
 import { Traces } from './Traces';
 import type { TestResult } from './types';
+import { boardPins, type BoardPins } from './wiring';
 import './bench.css';
 
 /** Read by the end page of the site: the last sketch the visitor worked on. */
@@ -52,6 +56,8 @@ const codeShownKey = (setupId: string) => `picodev-lab:bench-code:${setupId}`;
 type Mode = 'free' | 'challenge';
 interface Bench extends LoadedSetup {
   boardId: string;
+  /** The board's pins as its simulator numbers them (Velxio's mapping). */
+  pins: BoardPins;
   probe: SimProbe;
   /** The logic capture, shared by the agent (through the hub) and the visitor. */
   recorder: Recorder;
@@ -66,12 +72,10 @@ const seconds1 = (s: number, locale = text().locale) => s.toLocaleString(locale,
 interface PausableSim {
   start?(): void;
   stop?(): void;
+  /** Stops and keeps what is scheduled ahead (a level's stimulus); stop() empties it, fit for a reset. */
+  pause?(): void;
   setSpeed?(speed: number): void;
 }
-// AVRSimulator.stop() empties these (fit for a reset): a pause keeps them,
-// or a level's stimulus scheduled ahead would be lost.
-// ponytail: private fields of AVRSimulator read by name; a rename upstream only loses that stimulus.
-const KEPT_ON_PAUSE = ['scheduledPinChanges', 'serialRxQueue'] as const;
 
 const clock = (s: number) => `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
 
@@ -90,6 +94,28 @@ function partPins(tagName: string | undefined, properties: Record<string, unknow
     return pinNames(el);
   } catch {
     return null;
+  }
+}
+
+/**
+ * The room a part of the catalogue takes on the canvas, measured off screen
+ * once rendered, with the 6 px Velxio's wrapper adds on each side; null when
+ * it cannot say.
+ */
+async function partSize(tagName: string | undefined, properties: Record<string, unknown>): Promise<Size | null> {
+  if (!tagName || !customElements.get(tagName)) return null;
+  const el = document.createElement(tagName);
+  try {
+    for (const [k, v] of Object.entries(properties)) (el as unknown as Record<string, unknown>)[k] = v;
+    el.style.cssText = 'position:fixed;left:-10000px;top:0;visibility:hidden';
+    document.body.append(el);
+    await (el as { updateComplete?: Promise<unknown> }).updateComplete; // a Lit element renders in a microtask
+    const r = el.getBoundingClientRect();
+    return r.width && r.height ? { w: r.width + 12, h: r.height + 12 } : null;
+  } catch {
+    return null;
+  } finally {
+    el.remove();
   }
 }
 
@@ -159,6 +185,10 @@ function Loader({ setupId, mode }: { setupId: string; mode: Mode }) {
       const sim = boardId ? getBoardSimulator(boardId) : null;
       const pins = boardId ? getBoardPinManager(boardId) : null;
       if (!boardId || !sim || !pins) throw new Error(text().boardNotSimulated(loaded.sheet.board.kind));
+      await registry.load();
+      if (cancelled) return;
+      const kind = useSimulatorStore.getState().boards.find((b) => b.id === boardId)?.boardKind ?? (loaded.sheet.board.kind as BoardKind);
+      const numbers = boardPins(partPins(registry.getById(kind)?.tagName, {}) ?? [], (name) => boardPinToNumber(kind, name), ADC_PIN_MAP[kind] ?? []);
 
       const scope = useOscilloscopeStore.getState();
       scope.channels.forEach((c) => scope.removeChannel(c.id));
@@ -174,6 +204,7 @@ function Loader({ setupId, mode }: { setupId: string; mode: Mode }) {
       setBench({
         ...loaded,
         boardId,
+        pins: numbers,
         probe,
         recorder,
         banner: status?.banner,
@@ -234,9 +265,9 @@ function Workspace({ bench, mode }: { bench: Bench; mode: Mode }) {
   const running = useSimulatorStore((s) => s.boards.find((b) => b.id === boardId)?.running ?? false);
   const serial = useSimulatorStore((s) => s.boards.find((b) => b.id === boardId)?.serialOutput ?? '');
   const [compiling, setCompiling] = useState(false);
-  // Pause keeps the processor where it is (no reset); the speed is kept from one run to the next, ×1 at page load.
+  // Pause keeps the processor where it is (no reset); the speed is kept in this browser.
   const [paused, setPaused] = useState(false);
-  const [speed, setSpeed] = useState(1);
+  const [speed, setSpeed] = useState(() => readSpeed(SPEEDS));
   const [compileSecs, setCompileSecs] = useState<number | null>(null);
   const [journal, say] = useReducer(
     (lines: string[], line: string) => [...lines, `${new Date().toLocaleTimeString(text().locale)}  ${line}`].slice(-500),
@@ -273,20 +304,30 @@ function Workspace({ bench, mode }: { bench: Bench; mode: Mode }) {
   const [levelIndex, setLevelIndex] = useState(() => (levels.length ? readLevel(sheet.id, levels.length) : 0));
   const [results, setResults] = useState<TestResult[]>([]);
   const [passed, setPassed] = useState(false);
-  const [hints, setHints] = useState(0);
-  const [elapsed, tick] = useReducer((n: number) => n + 1, 0);
+  // The hints shown stay shown, per setup and level, in this browser.
+  const hintsFor = (i: number) => (levels[i] ? readHints(sheet.id, levels[i].id, levels[i].hints.length) : 0);
+  const [hints, setHints] = useState(() => hintsFor(levelIndex));
+  // The session counts from its start in this tab, not from the page load: a reload or a language change keeps it.
+  const [startedAt] = useState(() => sessionStart(sheet.id, mode));
+  const [tickMs, setTickMs] = useState(() => Date.now());
+  const elapsed = Math.max(0, Math.floor((tickMs - startedAt) / 1000));
   const [hubStatus, setHubStatus] = useState<HubStatus>('connecting');
   const [hubInfo, setHubInfo] = useState<SessionInfo | null>(null);
   const [viewers, setViewers] = useState(0);
   const [agentCalls, addAgentCall] = useReducer((calls: AgentCall[], call: AgentCall) => [...calls, call].slice(-200), []);
   const hub = useRef<OwnerLink | null>(null);
   const [offers, setOffers] = useState<BenchOffer[]>([]);
+  /** The hub pushed the offer (`benches`, v0.20): the reading at load, if later, is older. */
+  const offersPushed = useRef(false);
+  /** The bench's last capture for the session (v0.20), relayed by the hub. */
+  const [benchCapture, setBenchCapture] = useState<BenchCapture | null>(null);
   const [queue, onQueue] = useReducer(queueView, { phase: 'none' });
   const [notice, setNotice] = useState<string | null>(null);
   // No hub session while the hub takes none: no sharing, no queue, no agent.
   const hubOn = !!HUB_URL && !bench.paused;
-  // The bench filmed live during a turn with `video`: shown first, the scene comes back at turn_end.
-  const camera = queue.phase === 'turn' && hubInfo?.owner ? queue.video : undefined;
+  // The bench filmed live during a turn with `video` (or `hls`, v0.20): shown first, the scene comes back at turn_end.
+  const turnVideo = queue.phase === 'turn' && hubInfo?.owner ? { video: queue.video, hls: queue.hls } : null;
+  const camera = turnVideo?.video ?? turnVideo?.hls;
   const [viewFor, setViewFor] = useState(camera);
   if (viewFor !== camera) {
     setViewFor(camera);
@@ -298,17 +339,31 @@ function Workspace({ bench, mode }: { bench: Bench; mode: Mode }) {
   /** The circuit as loaded from the sheet: what a real bench is wired as. */
   const benchCircuit = useRef<Pick<ReturnType<typeof useSimulatorStore.getState>, 'components' | 'wires'> | null>(null);
   benchCircuit.current ??= { components: useSimulatorStore.getState().components, wires: useSimulatorStore.getState().wires };
+  /** The visitor's own circuit (Libre), put aside during a real turn and put back after it. */
+  const visitorCircuit = useRef<typeof benchCircuit.current>(null);
   useEffect(() => {
-    if (!realTurn) return;
-    now.current.halt();
     const sim = useSimulatorStore.getState();
-    const { components, wires } = benchCircuit.current!;
-    if (sim.components === components && sim.wires === wires) return;
-    sim.setComponents(components);
-    sim.setWires(wires);
-    sim.recalculateAllWirePositions();
+    const setCircuit = ({ components, wires }: NonNullable<typeof benchCircuit.current>) => {
+      sim.setComponents(components);
+      sim.setWires(wires);
+      sim.recalculateAllWirePositions();
+    };
+    if (!realTurn) {
+      const kept = visitorCircuit.current;
+      visitorCircuit.current = null;
+      if (kept) {
+        setCircuit(kept);
+        say(text().logVisitorCircuit);
+      }
+      return;
+    }
+    now.current.halt();
+    const wiring = benchCircuit.current!;
+    if (sim.components === wiring.components && sim.wires === wiring.wires) return;
+    visitorCircuit.current = { components: sim.components, wires: sim.wires };
+    setCircuit(wiring);
     say(text().logBenchCircuit);
-  }, [realTurn]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [realTurn]);
 
   /** The current run: a token to drop late answers, and what to undo on stop. */
   const run = useRef({ token: 0, undo: [] as Array<() => void> });
@@ -316,7 +371,7 @@ function Workspace({ bench, mode }: { bench: Bench; mode: Mode }) {
   const serialBox = useRef<HTMLPreElement>(null);
 
   useEffect(() => {
-    const id = setInterval(tick, 1000);
+    const id = setInterval(() => setTickMs(Date.now()), 1000);
     return () => clearInterval(id);
   }, []);
 
@@ -406,6 +461,14 @@ function Workspace({ bench, mode }: { bench: Bench; mode: Mode }) {
       level: (i) => i < levels.length && now.current.goToLevel(i),
       circuit: (pushed) => replaceCircuit(pushed, types),
       sim: () => getBoardSimulator(boardId) as unknown as AnalogSim | null,
+      board: bench.pins,
+      // A draft has no queue: no offer.
+      offers: (o) => {
+        if (bench.draft) return;
+        offersPushed.current = true;
+        setOffers(o);
+      },
+      benchCapture: setBenchCapture,
     }, bench.recorder);
     hub.current = link;
     const unsubscribe = useEditorStore.subscribe((s, prev) => {
@@ -435,10 +498,11 @@ function Workspace({ bench, mode }: { bench: Bench; mode: Mode }) {
     const boardEl = document.getElementById(boardId);
     const why = checkCircuit(pushed, boardId, pinNames(boardEl), catalogue);
     if (why) return why;
+    const sizes = new Map(await Promise.all(pushed.components.map(async (p) => [p.id, await partSize(registry.getById(stripBrandPrefix(p.type))?.tagName, p.properties)] as const)));
     now.current.halt();
     const sim = useSimulatorStore.getState();
     const board = sim.boards.find((b) => b.id === boardId);
-    const placed = placeFree(pushed, (board?.x ?? 0) + (boardEl instanceof HTMLElement ? boardEl.offsetWidth : 300), board?.y ?? 0);
+    const placed = placeFree(pushed, (board?.x ?? 0) + (boardEl instanceof HTMLElement ? boardEl.offsetWidth : 300), board?.y ?? 0, (p) => sizes.get(p.id) ?? null);
     placed.components.forEach((p) => types.set(stripBrandPrefix(p.type), p.type));
     sim.setComponents(placed.components.map((p) => ({ id: p.id, metadataId: stripBrandPrefix(p.type), x: p.x, y: p.y, properties: p.properties })));
     sim.setWires(
@@ -456,16 +520,14 @@ function Workspace({ bench, mode }: { bench: Bench; mode: Mode }) {
 
   useEffect(() => hub.current?.publishState(), [levelIndex, running, results, paused, speed]);
 
-  // The hub's benches for this setup (v0.4): none, and the bench is unchanged. A draft has none.
+  // The hub's benches for this setup (v0.4), read once; then the hub pushes them (`benches`, v0.20).
+  // None, and the bench is unchanged. A draft has none.
   useEffect(() => {
     if (!hubOn || bench.draft) return;
     let stopped = false;
-    const load = () => fetchBenches(sheet.id).then((o) => !stopped && setOffers(o));
-    void load();
-    const id = setInterval(load, 30_000); // ponytail: polled; benches come and go rarely
+    void fetchBenches(sheet.id).then((o) => !stopped && !offersPushed.current && setOffers(o));
     return () => {
       stopped = true;
-      clearInterval(id);
     };
   }, [sheet.id, bench.draft, hubOn]);
 
@@ -581,10 +643,8 @@ function Workspace({ bench, mode }: { bench: Bench; mode: Mode }) {
   function pause() {
     const sim = simulator();
     if (!running || paused || !sim?.stop || !sim.start) return;
-    const fields = sim as unknown as Record<string, unknown>;
-    const kept = KEPT_ON_PAUSE.map((k) => [k, fields[k]] as const);
-    sim.stop();
-    for (const [k, v] of kept) if (v !== undefined) fields[k] = v;
+    if (sim.pause) sim.pause();
+    else sim.stop(); // a simulator without pause(): what it had scheduled is lost
     setPaused(true);
     now.current.paused = true; // before the next render: a capture asked meanwhile is refused
     hub.current?.paused(); // the agent's capture ends; the visitor's waits
@@ -600,6 +660,7 @@ function Workspace({ bench, mode }: { bench: Bench; mode: Mode }) {
 
   function changeSpeed(value: number) {
     setSpeed(value);
+    saveSpeed(value);
     simulator()?.setSpeed?.(value);
   }
 
@@ -623,12 +684,18 @@ function Workspace({ bench, mode }: { bench: Bench; mode: Mode }) {
     saveLevel(sheet.id, i);
     setResults([]);
     setPassed(false);
-    setHints(0);
+    setHints(hintsFor(i));
   }
 
   // The levels before the current one were passed, in this session or a former one.
   const levelsPassed = levelIndex + (passed ? 1 : 0);
   const exitHref = `${localPath(EXIT_URL, lang)}?${new URLSearchParams({ setup: sheet.id, mode, level: String(levelsPassed), t: String(elapsed) })}`;
+  /** To the end page, with the result the hub signed when it has one (v0.20). */
+  // Leaving ends the session: the next visit of the setup in this tab counts from zero.
+  const leave = () => {
+    endSession(sheet.id, mode);
+    void withShare(exitHref, hubOn ? hubInfo : null).then((href) => window.location.assign(href));
+  };
   const level = levels[levelIndex];
   const testsPassed = results.filter((r) => r.status === 'passed').length;
   const probesOf = (kind: 'scope' | 'logic') => sheet.probes.filter((p) => p.kind === kind);
@@ -644,10 +711,17 @@ function Workspace({ bench, mode }: { bench: Bench; mode: Mode }) {
         <ViewSwitch scene={!!sceneSvg} camera={!!camera} view={view} onChange={setView} />
         <SimClock nowMs={probe.nowMs} running={running} paused={paused} />
         {/* The scene stays mounted: it follows the bench even when hidden. */}
-        <div ref={scene} className="bench-scene" role="img" aria-label={t.sceneAria} hidden={view !== 'decor'} />
+        <div ref={scene} className="bench-scene" role="img" aria-label={t.sceneAria} hidden={view !== 'decor' || realTurn} />
+        {/* A real bench without a camera: the browser simulates nothing, so the scene would stay still. */}
+        {view === 'decor' && realTurn && (
+          <div className="bench-real-turn" role="status">
+            <strong>{t.realTurnTitle}</strong>
+            <p>{t.realTurnNoVideo}</p>
+          </div>
+        )}
         {/* The schema stays mounted too: its parts follow the bench from the start. */}
-        <Schema boardId={boardId} probes={sheet.probes} probe={probe} running={running} editable={mode === 'free' && !realTurn} hidden={view !== 'schema'} />
-        {view === 'camera' && camera && <Camera path={camera} token={hubInfo!.owner!} />}
+        <Schema boardId={boardId} board={bench.pins} probes={sheet.probes} probe={probe} running={running} editable={mode === 'free' && !realTurn} hidden={view !== 'schema'} />
+        {view === 'camera' && turnVideo && <Camera path={turnVideo.video} hls={turnVideo.hls} token={hubInfo!.owner!} />}
       </div>
     ),
     traces: sheet.probes.length > 0 && (
@@ -656,7 +730,15 @@ function Workspace({ bench, mode }: { bench: Bench; mode: Mode }) {
         {(['scope', 'logic'] as const).map((kind) => probesOf(kind).length > 0 && <Traces key={kind} kind={kind} probes={probesOf(kind)} nowMs={probe.nowMs} live={running} />)}
       </div>
     ),
-    capture: probesOf('logic').length > 0 && !realTurn && <CapturePanel recorder={bench.recorder} probes={probesOf('logic')} running={running} />,
+    // During a real turn the capture is the bench's analyser, asked through the hub (v0.20).
+    capture: probesOf('logic').length > 0 && (
+      <CapturePanel
+        recorder={bench.recorder}
+        probes={probesOf('logic')}
+        running={running}
+        bench={realTurn ? { capture: benchCapture, request: (pins, ms) => hub.current?.requestCapture(pins, ms) ?? false } : undefined}
+      />
+    ),
     serial: (
       <div className="bench-serial">
         <div>
@@ -679,9 +761,12 @@ function Workspace({ bench, mode }: { bench: Bench; mode: Mode }) {
         results={results}
         passed={passed}
         hintsShown={hints}
-        onHint={() => setHints(hints + 1)}
+        onHint={() => {
+          setHints(hints + 1);
+          saveHints(sheet.id, level.id, hints + 1);
+        }}
         onNext={() => goToLevel(levelIndex + 1)}
-        onFinish={() => window.location.assign(exitHref)}
+        onFinish={leave}
       />
     ),
     code: codeShown && (
@@ -821,7 +906,15 @@ function Workspace({ bench, mode }: { bench: Bench; mode: Mode }) {
               {paused ? <path d="M3 1.5v11l9-5.5z" fill="currentColor" /> : <path d="M3 2h3v10H3zM8 2h3v10H8z" fill="currentColor" />}
             </svg>
           </button>
-          <select className="bench-speed" value={speed} onChange={(e) => changeSpeed(Number(e.target.value))} aria-label={t.speed} title={t.speed}>
+          {/* A real bench runs at its own pace: nothing to speed up during the turn. */}
+          <select
+            className="bench-speed"
+            value={speed}
+            onChange={(e) => changeSpeed(Number(e.target.value))}
+            disabled={realTurn}
+            aria-label={t.speed}
+            title={realTurn ? t.speedRealTurn : t.speed}
+          >
             {SPEEDS.map((v) => (
               <option key={v} value={v}>
                 ×{v.toLocaleString(t.locale)}
@@ -861,7 +954,16 @@ function Workspace({ bench, mode }: { bench: Bench; mode: Mode }) {
           <span className="bench-timer" role="timer" aria-label={t.sessionTime}>
             {clock(elapsed)}
           </span>
-          <a href={exitHref}>{t.yourProject}</a>
+          <a
+            href={exitHref}
+            onClick={(e) => {
+              if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return; // a new tab gets the plain link
+              e.preventDefault();
+              leave();
+            }}
+          >
+            {t.yourProject}
+          </a>
         </div>
       </header>
 
