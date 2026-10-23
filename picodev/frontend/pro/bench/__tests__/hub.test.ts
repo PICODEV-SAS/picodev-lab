@@ -248,6 +248,21 @@ describe('bench hub client, owner', () => {
     ]);
   });
 
+  it('hands the bench serial of events to the page, joined, and nothing else (v0.23)', async () => {
+    const { startOwner } = await import('../hub');
+    const h = { ...hooks(), benchSerial: vi.fn() };
+    startOwner(sheet, 'free', fakeProbe().probe, h);
+    await vi.runOnlyPendingTimersAsync();
+    const ws = FakeSocket.all[0];
+    ws.accept();
+
+    ws.deliver({ type: 'events', events: [{ t: 10, k: 'serial', v: 'Bonjour ' }, { t: 12, k: 'pin', pin: 2, v: 1 }, null, { t: 14, k: 'serial', v: 5 }, { t: 20, k: 'serial', v: '<b>x</b>\n' }] });
+    ws.deliver({ type: 'events', events: [{ t: 30, k: 'pin', pin: 2, v: 0 }] }); // no serial: no call
+    ws.deliver({ type: 'events', events: 'nope' });
+    ws.deliver({ type: 'events', events: [{ t: 40, k: 'serial', v: '' }] });
+    expect(h.benchSerial.mock.calls).toEqual([['Bonjour <b>x</b>\n']]);
+  });
+
   it('reconnects with a growing delay', async () => {
     const { startOwner } = await import('../hub');
     const h = hooks();

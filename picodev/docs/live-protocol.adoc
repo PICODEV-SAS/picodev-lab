@@ -422,6 +422,26 @@ recording (`busy`), that it is not the visitor's turn (`refused`), or that the
 hub refused it (any other code); the `detail` is not shown. The simulation's traces
 are hidden during the turn: only the bench's capture shows.
 
+=== Bench serial in the editor (v0.23)
+
+During a turn on a bench, the serial output of the bench's board takes the
+place of the simulation's in the serial panel, for the owner and for
+spectators. Output only: nothing is written to the board's serial.
+
+[cols="1,1,4", options="header"]
+|===
+|Direction |`type` |Fields
+
+|hub -> owner, spectators |`events` |`{events: [{t, k: "serial", v}]}`: what the board wrote, `v` a string, `t` on the turn's clock. During a turn on a bench these are the only `events` the hub sends the owner.
+|===
+
+The editor appends the `v` of the `serial` items, in order, to the serial
+panel (the last 16 384 characters), and ignores any other item. The panel is
+emptied when the turn starts and at each run, and goes back to the
+simulation's output when the turn ends. Spectators replay these `events` as
+they replay the owner's, and empty the panel when the turn starts. The text
+is not filtered: it is shown as plain text, never as HTML.
+
 == Optional extension: error replies
 
 A hub may answer a message it refuses on the owner's live channel (and on its

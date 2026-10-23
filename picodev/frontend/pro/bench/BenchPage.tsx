@@ -50,6 +50,8 @@ import './bench.css';
 
 /** Read by the end page of the site: the last sketch the visitor worked on. */
 const LAST_SKETCH_KEY = 'picodev-lab:last-sketch';
+/** The bench's serial kept on screen during a real turn, in characters (the hub keeps 16 KiB). */
+const MAX_SERIAL = 16384;
 const sketchKey = (setupId: string) => `picodev-lab:sketch:${setupId}`;
 /** Whether the editor column is shown, for this tab only: a new session starts with it. */
 const codeShownKey = (setupId: string) => `picodev-lab:bench-code:${setupId}`;
@@ -344,6 +346,8 @@ function Workspace({ bench, mode }: { bench: Bench; mode: Mode }) {
   const offersPushed = useRef(false);
   /** The bench's last capture for the session (v0.20), relayed by the hub. */
   const [benchCapture, setBenchCapture] = useState<BenchCapture | null>(null);
+  /** The serial output of the bench's board during a real turn (v0.23), plain text. */
+  const [benchSerial, setBenchSerial] = useState('');
   const [queue, onQueue] = useReducer(queueView, { phase: 'none' });
   const [notice, setNotice] = useState<string | null>(null);
   // No hub session while the hub takes none: no sharing, no queue, no agent.
@@ -371,6 +375,7 @@ function Workspace({ bench, mode }: { bench: Bench; mode: Mode }) {
       sim.setWires(wires);
       sim.recalculateAllWirePositions();
     };
+    if (realTurn) setBenchSerial('');
     if (!realTurn) {
       const kept = visitorCircuit.current;
       visitorCircuit.current = null;
@@ -428,7 +433,7 @@ function Workspace({ bench, mode }: { bench: Bench; mode: Mode }) {
 
   useEffect(() => {
     serialBox.current?.scrollTo(0, serialBox.current.scrollHeight);
-  }, [serial]);
+  }, [serial, benchSerial]);
 
   useEffect(() => () => halt(), []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -514,6 +519,7 @@ function Workspace({ bench, mode }: { bench: Bench; mode: Mode }) {
         setOffers(o);
       },
       benchCapture: setBenchCapture,
+      benchSerial: (text) => setBenchSerial((s) => (s + text).slice(-MAX_SERIAL)),
     }, bench.recorder);
     hub.current = link;
     const unsubscribe = useEditorStore.subscribe((s, prev) => {
@@ -627,6 +633,7 @@ function Workspace({ bench, mode }: { bench: Bench; mode: Mode }) {
 
     if (now.current.realTurn) {
       // publishCompile sent it to the bench, which flashes it (one load per 10 s at most).
+      setBenchSerial('');
       say(text().logSentToBench);
       return;
     }
@@ -836,7 +843,7 @@ function Workspace({ bench, mode }: { bench: Bench; mode: Mode }) {
           <span>{compiling ? t.compilingShort : compileSecs === null ? '' : t.compiledIn(seconds1(compileSecs, t.locale))}</span>
         </div>
         <pre ref={serialBox} tabIndex={0} role="log" aria-label={t.serialAria}>
-          {serial}
+          {realTurn ? benchSerial : serial}
         </pre>
       </div>
     ),

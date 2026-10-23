@@ -840,6 +840,8 @@ export interface OwnerHooks {
   offers?(offers: BenchOffer[]): void;
   /** A capture of the bench relayed by the hub (v0.20), the visitor's or the agent's. */
   benchCapture?(capture: BenchCapture): void;
+  /** The serial output of the bench's board during a turn (v0.23), plain text, never HTML. */
+  benchSerial?(text: string): void;
 }
 
 export interface OwnerLink {
@@ -979,6 +981,16 @@ export function startOwner(sheet: SetupSheet, mode: string, probe: BenchProbe, h
             const got = readBenchCapture(msg);
             if (got && got.phase !== 'waiting') asked = undefined;
             if (got) hooks.benchCapture?.(got);
+            break;
+          }
+          // From the hub, only the bench's serial during a turn (v0.23).
+          case 'events': {
+            if (!Array.isArray(msg.events)) break;
+            const text = msg.events
+              .filter((e): e is { v: string } => !!e && e.k === 'serial' && typeof e.v === 'string')
+              .map((e) => e.v)
+              .join('');
+            if (text) hooks.benchSerial?.(text);
             break;
           }
           case 'error':

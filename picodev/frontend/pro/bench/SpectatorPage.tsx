@@ -118,8 +118,10 @@ function Spectator({ sessionId, token }: { sessionId: string; token: string }) {
           case 'turn':
           case 'turn_end': {
             const q = queueMessage(m);
-            if (q?.type === 'turn') setTurn({ kind: q.kind, ends_at: q.ends_at, video: q.video, hls: q.hls });
-            else if (q) setTurn(null);
+            if (q?.type === 'turn') {
+              setTurn({ kind: q.kind, ends_at: q.ends_at, video: q.video, hls: q.hls });
+              setSerial(''); // the simulated output does not run into the bench's
+            } else if (q) setTurn(null);
             break;
           }
         }
